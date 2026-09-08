@@ -34,13 +34,17 @@ exactly.
 |---|---|
 | Device probe (WebGPU, memory, bandwidth, NAT) | working |
 | HTTPS + signaling dev server | working |
-| Wire format: f16 packing, SCTP-sized slicing | working · 22/22 tests |
+| Wire format: adaptive f32/f16, SCTP-sized slicing | working · 30/30 tests |
 | WebRTC mesh, direct peer links | working · bit-exact tensor bounce |
-| Inference engine (single device) | next |
-| Two-node split | next |
-| Profiler + DP partitioner | next |
-| Fault recovery | next |
-| Dashboard | next |
+| Inference engine, sliceable | working · SmolLM2 135M |
+| Split output identical to one device | working · 11/11, wire codec in the loop |
+| End-to-end swarm over WebRTC | working · answers stream to every screen |
+| Profiler + DP partitioner + chain order + host election | working · 29/29 tests |
+| Fault recovery (device leaves mid-answer) | next |
+| WebGPU engine | next |
+
+Measured across two browsers on one machine: 60 tokens, layers 0-12 and 13-29,
+answer byte-identical to the single-device CPU reference.
 
 ## Running it
 
@@ -78,13 +82,40 @@ node tests/wire.test.mjs
 ## Layout
 
 ```
-room/         wire.js   f16 packing + SCTP-sized framing
-              mesh.js   WebRTC mesh, negotiated data channels, RTT probe
-scheduler/    profiling, the DP partitioner, chain order, recovery   (ours - the contribution)
-engine/       the WebGPU inference engine
-tools/        serve.mjs (HTTPS + signaling), signal.mjs, make-cert.sh
-tests/        correctness gates
+scheduler/    cost.js   the latency and memory model, with its assumptions stated
+              plan.js   five strategies; the optimal one solves subset + order +
+                        layer cut + host election exactly            <- the contribution
+              probe.js  measures ms/layer, detects a throttled tab
+room/         wire.js   adaptive f32/f16 + SCTP-sized framing
+              mesh.js   WebRTC mesh, negotiated channels, RTT gossip
+              room.js   the room: plan, deal, load, generate
+              awake.js  wake lock, so a device in the chain cannot doze
+engine/       cpu.mjs   the sliceable engine: embedRun / runHidden / headFromHidden
+tools/        serve.mjs (HTTPS + signaling) · fetch-model · reference · calibrate ·
+              scenario (when is a swarm worth it?) · tokenizer · make-cert
+tests/        wire · split · plan
 ```
+
+## What we found
+
+Three results worth stating before anyone asks:
+
+- **A swarm buys capacity, not speed.** Single-stream decode is a sum of stages plus
+  hops, so splitting a model over more devices makes one stream slower, never faster.
+  exo measures 49.3 / 44.4 / 39.7 tok/s on 1 / 2 / 3 M4 Pros. The scheduler's job is
+  to know when *not* to split, and to minimise the damage when the model genuinely
+  does not fit.
+- **A hidden browser tab runs about 3x slower.** Byte-identical code measured 0.24
+  GMAC/s in a background tab against 0.75 inline in the same page. A device profiled
+  while hidden reports a speed it will not hold, and one wrong number produces a
+  confidently wrong plan. Hence: a `hidden` flag, a re-measure on visibility, a second
+  calibration against real layers, and a wake lock.
+- **Lossy activations make the answer depend on where the model was cut.** f16 only
+  pays for itself when it removes an SCTP slice, which at these hidden sizes it does
+  not. `room/wire.js` sends f32 when it is free, and the split answer is then
+  bit-identical to the single-device answer.
+
+`node tools/scenario.mjs` prints the whole picture for a given room.
 
 ## Licence
 

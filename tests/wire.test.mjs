@@ -4,6 +4,7 @@
 import {
   f32ToF16, f16ToF32, packF16, unpackF16, looksBad,
   encodeFrame, decodeSlice, makeReassembler, SLICE_BYTES,
+  chooseEncoding, packWire, unpackWire,
 } from "../room/wire.js";
 
 let pass = 0, fail = 0;
@@ -154,6 +155,57 @@ console.log("\nframing");
   ok("a foreign buffer is rejected, not misparsed", (() => {
     const rs = makeReassembler();
     return decodeSlice(rs, new ArrayBuffer(64)) === null && decodeSlice(rs, new ArrayBuffer(4)) === null;
+  })());
+}
+
+console.log("\nprecision choice");
+{
+  // f16 is only worth paying for when it removes a slice. Below that it loses
+  // precision for nothing, and lossy activations make the answer depend on where the
+  // model happened to be split.
+  ok("dim 576 (SmolLM2 135M) sends f32 — same slice count", chooseEncoding(576) === "f32");
+  ok("dim 1024 (Qwen3 0.6B) sends f32 — same slice count", chooseEncoding(1024) === "f32");
+  ok("dim 2048 (Qwen3 1.7B) sends f16 — f32 would cost a second slice", chooseEncoding(2048) === "f16");
+  ok("dim 5120 (Qwen 3.8 27B) sends f16", chooseEncoding(5120) === "f16");
+
+  const src = new Float32Array(576);
+  for (let i = 0; i < src.length; i++) src[i] = Math.sin(i * 0.41) * 2.7 + 1e-7 * i;
+
+  ok("an f32 frame round-trips BIT-EXACTLY", (() => {
+    const enc = chooseEncoding(576);
+    const slices = encodeFrame({ t: "hidden", pos: 5, data: packWire(src, enc) }, 1);
+    const rs = makeReassembler();
+    let out = null;
+    for (const s of slices) out = decodeSlice(rs, s) || out;
+    if (out.enc !== "f32" || slices.length !== 1) return false;
+    const back = unpackWire(out.data, out.enc);
+    return back.length === src.length && back.every((v, i) => v === src[i]);
+  })());
+
+  ok("f32 costs no extra slice at dim 576", (() => {
+    const a = encodeFrame({ t: "hidden", pos: 0, data: packWire(src, "f32") }, 2).length;
+    const b = encodeFrame({ t: "hidden", pos: 0, data: packWire(src, "f16") }, 3).length;
+    return a === b && a === 1;
+  })());
+
+  ok("the receiver reads the encoding from the frame, not from configuration", (() => {
+    // a peer that sent f16 and a peer that sent f32 both decode correctly, with no
+    // negotiation between them
+    const rs = makeReassembler();
+    let a = null, b = null;
+    for (const s of encodeFrame({ t: "hidden", pos: 1, data: packWire(src, "f16") }, 10)) a = decodeSlice(rs, s) || a;
+    for (const s of encodeFrame({ t: "hidden", pos: 2, data: packWire(src, "f32") }, 11)) b = decodeSlice(rs, s) || b;
+    if (a.enc !== "f16" || b.enc !== "f32") return false;
+    const ba = unpackWire(a.data, a.enc), bb = unpackWire(b.data, b.enc);
+    // f32 is exact; f16 is close but not equal -- which is the whole point
+    return bb.every((v, i) => v === src[i]) && ba.some((v, i) => v !== src[i]);
+  })());
+
+  ok("user flags survive alongside the encoding flag", (() => {
+    const rs = makeReassembler();
+    let out = null;
+    for (const s of encodeFrame({ t: "hidden-ret", pos: 9, flags: 1, data: packWire(src, "f32") }, 12)) out = decodeSlice(rs, s) || out;
+    return out.flags === 1 && out.enc === "f32";
   })());
 }
 

@@ -1,8 +1,11 @@
 // Wire format for activations moving between peers.
 //
-// Two jobs: shrink the hidden state (f32 -> f16 halves the bytes with no measurable
-// quality cost at these magnitudes), and cut every send into slices small enough to
-// clear Chrome's SCTP stack in one go.
+// Two jobs: choose a precision for the hidden state, and cut every send into slices
+// small enough to clear Chrome's SCTP stack in one go.
+//
+// Precision is chosen per model rather than fixed at f16 -- see chooseEncoding below.
+// f16 is lossy, and lossy activations make the answer depend on where the model was
+// split, which quietly destroys the property this project most wants to guarantee.
 //
 // The slice size is not arbitrary. Chrome's dcSCTP releases at most ~4 packets per
 // send opportunity and opens with a ~12 KB congestion window, so a single message
@@ -84,14 +87,48 @@ export const SLICE_BYTES = 4600;          // ~4 SCTP packets of 1150 B payload
 const HDR = 24;
 const MAGIC = 0x4153;                     // "AS"
 export const KINDS = ["hidden", "hidden-b", "hidden-ret", "hidden-ret-b"];
+const FLAG_F32 = 2;                       // flags bit 1: payload is f32, not f16
 
-// msg: { t, pos, n?, flags?, data: Uint16Array }
+// Pick the wire precision for a given hidden size.
+//
+// f16 halves the bytes, but that only buys anything if it removes a slice -- latency
+// on a hop is set by how many SCTP send opportunities the frame needs, not by its
+// size. And f16 is lossy: it perturbs the hidden state, so a room that splits the
+// model at a different layer produces a different token stream from the same prompt.
+// That silently breaks the one property worth guaranteeing, that a split answer
+// equals the single-device answer.
+//
+// So: send f32 whenever it costs no extra slice, and only pay the precision when the
+// bytes genuinely buy a round trip back.
+//
+//   dim 576  (SmolLM2 135M)   2304 B f32 -> 1 slice, same as f16. Free.
+//   dim 1024 (Qwen3 0.6B)     4096 B f32 -> 1 slice, same as f16. Free.
+//   dim 2048 (Qwen3 1.7B)     8192 B f32 -> 2 slices vs 1. f16 wins.
+export function chooseEncoding(dim) {
+  const per = SLICE_BYTES - HDR;
+  return Math.ceil((dim * 4) / per) === Math.ceil((dim * 2) / per) ? "f32" : "f16";
+}
+
+// Pack a hidden state for the wire at the chosen precision.
+export function packWire(f, enc) {
+  return enc === "f32" ? f : packF16(f);
+}
+
+export function unpackWire(data, enc) {
+  return enc === "f32" ? (data instanceof Float32Array ? data : new Float32Array(data.buffer, data.byteOffset, data.byteLength / 4)) : unpackF16(data);
+}
+
+// msg: { t, pos, n?, flags?, data: Uint16Array (f16) | Float32Array (f32) }
+// The payload type decides the encoding; the receiver is told via a header flag, so
+// mixed-precision peers interoperate without negotiation.
 // Returns an array of ArrayBuffers, each small enough to leave in one send.
 export function encodeFrame(msg, msgId) {
   const kind = KINDS.indexOf(msg.t);
   if (kind < 0) throw new Error("not a wire kind: " + msg.t);
-  const u16 = msg.data;
-  const bytes = new Uint8Array(u16.buffer, u16.byteOffset, u16.byteLength);
+  const isF32 = msg.data instanceof Float32Array;
+  const flags = (msg.flags || 0) | (isF32 ? FLAG_F32 : 0);
+  const src = msg.data;
+  const bytes = new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
   const per = SLICE_BYTES - HDR;
   const nSlices = Math.max(1, Math.ceil(bytes.length / per));
   const out = [];
@@ -101,7 +138,7 @@ export function encodeFrame(msg, msgId) {
     const dv = new DataView(buf);
     dv.setUint16(0, MAGIC);
     dv.setUint8(2, kind);
-    dv.setUint8(3, msg.flags || 0);
+    dv.setUint8(3, flags);
     dv.setUint32(4, msgId >>> 0);
     dv.setUint32(8, msg.pos >>> 0);
     dv.setUint16(12, msg.n || 1);
@@ -157,5 +194,9 @@ export function decodeSlice(rs, buf) {
   rs.rx.delete(id);
   rs.done.add(id);
   if (rs.done.size > DONE_MEMORY) rs.done.delete(rs.done.values().next().value);
-  return { t: KINDS[kind], pos, n, flags, data: new Uint16Array(r.buf.buffer, 0, total >> 1) };
+  const f32 = !!(flags & FLAG_F32);
+  const data = f32
+    ? new Float32Array(r.buf.buffer, 0, total >> 2)
+    : new Uint16Array(r.buf.buffer, 0, total >> 1);
+  return { t: KINDS[kind], pos, n, flags: flags & ~FLAG_F32, enc: f32 ? "f32" : "f16", data };
 }

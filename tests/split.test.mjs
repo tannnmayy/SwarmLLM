@@ -10,6 +10,7 @@
 
 import { CpuEngine, argmax } from "../engine/cpu.mjs";
 import { Tokenizer } from "../tools/tokenizer.mjs";
+import { chooseEncoding, packWire, unpackWire } from "../room/wire.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,11 +63,19 @@ async function runSplit(cuts) {
     }));
   }
 
+  // Send every hidden state through the real wire codec between slices, exactly as
+  // the network would. Without this the test proves something weaker than it looks:
+  // f16 on the wire perturbs the activation, so the answer starts depending on where
+  // the model happened to be cut, and a room that re-plans mid-conversation would
+  // change its own output. chooseEncoding is what keeps that from happening.
+  const enc = chooseEncoding(whole.cfg.hiddenSize);
+  const overWire = (x) => unpackWire(packWire(x, enc), enc);
+
   const step = (tokenId, pos) => {
     // host embeds and runs its own range, then the hidden state walks the chain
     let x = slices[0].embedRun(tokenId, pos);
-    for (let i = 1; i < slices.length; i++) x = slices[i].runHidden(x, pos);
-    return slices[0].headFromHidden(x);          // and comes back to the host
+    for (let i = 1; i < slices.length; i++) x = slices[i].runHidden(overWire(x), pos);
+    return slices[0].headFromHidden(overWire(x));   // and comes back to the host
   };
 
   let pos = 0, logits = null;
@@ -79,6 +88,9 @@ async function runSplit(cuts) {
   }
   return { out, logits, ranges, slices };
 }
+
+console.log(`
+wire: dim ${whole.cfg.hiddenSize} -> ${chooseEncoding(whole.cfg.hiddenSize)} (hidden states pass through the real codec below)`);
 
 const layouts = [
   { name: "2 devices, even", cuts: [0, 15, 30] },

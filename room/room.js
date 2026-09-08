@@ -24,7 +24,7 @@
 // throttled phone quietly set the pace for every token.
 
 import { Mesh } from "./mesh.js";
-import { packF16, unpackF16, looksBad } from "./wire.js";
+import { packWire, unpackWire, looksBad, chooseEncoding } from "./wire.js";
 import { CpuEngine, argmax } from "../engine/cpu.mjs";
 import { Tokenizer } from "../tools/tokenizer.mjs";
 import { modelSpec, plan as solvePlan, compareAll } from "../scheduler/plan.js";
@@ -77,6 +77,9 @@ export class Room {
     const dir = MODELS[this.model].dir;
     const manifest = await (await fetch(dir + "/manifest.json")).json();
     this.spec = modelSpec(manifest, { precision: "f32", maxSeq: 512 });
+    // f32 on the wire when it costs no extra SCTP slice, so a split answer is
+    // bit-identical to the single-device answer. See room/wire.js.
+    this.wireEnc = chooseEncoding(this.spec.hidden);
 
     const r = await this.mesh.connect();
     this.tok = await Tokenizer.load(dir + "/tokenizer.json");
@@ -270,13 +273,13 @@ export class Room {
 
     if (f.t === "hidden") {
       // I am a worker: run my layers, pass it on.
-      const x = unpackF16(f.data);
+      const x = unpackWire(f.data, f.enc);
       if (looksBad(x)) { this._emit("error", "non-finite hidden state from " + from); return; }
       const t0 = performance.now();
       const out = this.engine.runHidden(x, f.pos);
       const ms = performance.now() - t0;
       this._emit("stage", { pos: f.pos, ms, layers: this.engine.layerCount });
-      const data = packF16(out);
+      const data = packWire(out, this.wireEnc);
       if (this.next) this.mesh.sendFrame(this.next, { t: "hidden", pos: f.pos, data });
       else this.mesh.sendFrame(this.hostId, { t: "hidden-ret", pos: f.pos, data });
       return;
@@ -284,7 +287,7 @@ export class Room {
 
     if (f.t === "hidden-ret") {
       const resolve = this.waiting.get(f.pos);
-      if (resolve) { this.waiting.delete(f.pos); resolve(unpackF16(f.data)); }
+      if (resolve) { this.waiting.delete(f.pos); resolve(unpackWire(f.data, f.enc)); }
     }
   }
 
@@ -416,7 +419,7 @@ export class Room {
       const t0 = performance.now();
       x = await new Promise((resolve) => {
         this.waiting.set(pos, resolve);
-        this.mesh.sendFrame(this.next, { t: "hidden", pos, data: packF16(x) });
+        this.mesh.sendFrame(this.next, { t: "hidden", pos, data: packWire(x, this.wireEnc) });
         setTimeout(() => {
           if (this.waiting.has(pos)) { this.waiting.delete(pos); resolve(null); }
         }, 20000);
