@@ -11,14 +11,26 @@
 //                                                             │
 //   host    final norm -> LM head -> sample -> next token ◄────┘
 //
-// Layer dealing here is deliberately naive -- an even split in join order. That is
-// the *baseline* the scheduler in scheduler/ has to beat, and keeping it intact
-// means the comparison is honest rather than a strawman we wrote to lose.
+// Placement comes from scheduler/plan.js, which decides four things together: which
+// devices are worth including at all, in what order, holding which layers, and which
+// one should be host. The naive strategies it competes against are kept and reachable
+// (`strategy: "even" | "memory" | ...`), so the comparison stays a measurement rather
+// than a strawman written to lose.
+//
+// Profiling happens twice, on purpose. A synthetic probe at join gives the planner
+// something to work with before anyone holds weights; once layers are loaded, the
+// real thing is timed and the room is told. That second pass is not redundant -- a
+// backgrounded tab measures ~3x slow, and an uncorrected number there would let one
+// throttled phone quietly set the pace for every token.
 
 import { Mesh } from "./mesh.js";
 import { packF16, unpackF16, looksBad } from "./wire.js";
 import { CpuEngine, argmax } from "../engine/cpu.mjs";
 import { Tokenizer } from "../tools/tokenizer.mjs";
+import { modelSpec, plan as solvePlan, compareAll } from "../scheduler/plan.js";
+import { rttLookup } from "../scheduler/cost.js";
+import { profile, watchPressure, defaultPledgeBytes } from "../scheduler/probe.js";
+import { keepAwake } from "./awake.js";
 
 export const MODELS = {
   "smollm2-135m": { label: "SmolLM2 135M", dir: "/models/smollm2-135m", layers: 30 },
@@ -40,6 +52,11 @@ export class Room {
     this.waiting = new Map();     // pos -> resolve, host side
     this._h = new Map();
     this.stats = { tokens: 0, ms: 0, hops: [] };
+    this.spec = null;             // model cost model, set on join
+    this.myProfile = null;        // this device's measured speed and pledge
+    this.pledgeBytes = null;      // what the user chose to contribute
+    this.rttMatrix = new Map();   // id -> { id: ms }, gossiped so the host sees it all
+    this.lastPlan = null;
     this._wire();
   }
 
@@ -56,12 +73,114 @@ export class Room {
   get id() { return this.mesh.id; }
   get code() { return this.mesh.room; }
 
-  async join() {
+  async join({ pledgeBytes = null } = {}) {
+    const dir = MODELS[this.model].dir;
+    const manifest = await (await fetch(dir + "/manifest.json")).json();
+    this.spec = modelSpec(manifest, { precision: "f32", maxSeq: 512 });
+
     const r = await this.mesh.connect();
-    this.tok = await Tokenizer.load(MODELS[this.model].dir + "/tokenizer.json");
+    this.tok = await Tokenizer.load(dir + "/tokenizer.json");
     this._emit("joined", r);
+
+    // Measure this device before telling anyone what it is worth. ~300 ms.
+    this.pledgeBytes = pledgeBytes ?? defaultPledgeBytes();
+    this._emit("profiling");
+    this.myProfile = await profile(this.spec, { pledgeBytes: this.pledgeBytes });
+    this._announce();
+    this._emit("profiled", this.myProfile);
+
+    // A phone that starts throttling should be re-planned around, not left to set
+    // the pace for the whole room.
+    this._unwatch = watchPressure((state) => {
+      this._emit("pressure", state);
+      if (state === "serious" || state === "critical") {
+        this.myProfile.pressure = state;
+        this._announce();
+      }
+    });
+
+    // Gossip RTTs: each device only measures its own links, and the planner needs
+    // the whole matrix to order the chain.
+    this._rttTimer = setInterval(() => this._announce(), 4000);
+
+    // A hidden tab is throttled hard -- on a phone with the screen off, by more than
+    // an order of magnitude. Any speed measured while hidden is a lie, so re-measure
+    // on the way back to visible and tell the room the device changed.
+    this._onVis = async () => {
+      if (document.visibilityState !== "visible" || this.busy) return;
+      const now = Date.now();
+      if (now - (this._lastProbe || 0) < 5000) return;      // debounce: it fires in bursts
+      this._lastProbe = now;
+      if (this.engine) this._calibrate();
+      else {
+        this.myProfile = await profile(this.spec, { pledgeBytes: this.pledgeBytes });
+        this._announce();
+        this._emit("profiled", this.myProfile);
+      }
+    };
+    document.addEventListener("visibilitychange", this._onVis);
+
     this._emit("roster", this.peers);
     return r;
+  }
+
+  _announce() {
+    if (!this.myProfile) return;
+    const rtts = {};
+    for (const p of this.mesh.roster()) if (p.rtt != null) rtts[p.id] = p.rtt;
+    this.rttMatrix.set(this.id, rtts);
+    this.mesh.setMeta({
+      msPerLayer: this.myProfile.msPerLayer,
+      budgetBytes: this.pledgeBytes,
+      stable: this.myProfile.stable,
+      pressure: this.myProfile.pressure,
+      battery: this.myProfile.battery,
+      rtts,
+    });
+  }
+
+  setPledge(bytes) {
+    this.pledgeBytes = bytes;
+    this._announce();
+    this._emit("roster", this.peers);
+  }
+
+  // Everything the planner needs, assembled from the roster.
+  _devices() {
+    const out = [{
+      id: this.id,
+      name: this.mesh.name,
+      msPerLayer: this.myProfile.msPerLayer,
+      budgetBytes: this.pledgeBytes,
+    }];
+    for (const p of this.peers) {
+      if (!p.ready || !p.meta?.msPerLayer) continue;
+      out.push({
+        id: p.id,
+        name: p.name,
+        msPerLayer: p.meta.msPerLayer,
+        budgetBytes: p.meta.budgetBytes,
+      });
+    }
+    return out;
+  }
+
+  _rtt() {
+    const m = {};
+    for (const [from, row] of this.rttMatrix) m[from] = { ...row };
+    for (const p of this.peers) if (p.meta?.rtts) m[p.id] = { ...(m[p.id] || {}), ...p.meta.rtts };
+    // Unmeasured pairs fall back to the worst link we have actually seen, not to
+    // zero: assuming a free link to a device nobody has pinged is how you get a
+    // plan that looks great and runs badly.
+    const seen = Object.values(m).flatMap((r) => Object.values(r)).filter(Number.isFinite);
+    const fallback = seen.length ? Math.max(...seen) : 25;
+    return rttLookup(m, { fallback });
+  }
+
+  // What every strategy would do with this room, right now. The benchmark table.
+  compare() {
+    if (!this.spec || !this.myProfile) return null;
+    return compareAll(this.spec, this._devices(), this._rtt());
   }
 
   _wire() {
@@ -126,6 +245,17 @@ export class Room {
         this._emit("gen-done", m.stats);
         break;
 
+      case "become-host":
+        // The previous device's planner elected me. Re-solve locally rather than
+        // trusting a plan computed elsewhere: by now I may know links it did not.
+        this._emit("became-host");
+        await this.start({ strategy: m.strategy || "optimal" });
+        break;
+
+      case "stand-by":
+        this._emit("stand-by", m.why);
+        break;
+
       case "reset":
         this.engine?.reset();
         this.pos = 0;
@@ -177,51 +307,101 @@ export class Room {
       },
     });
     this._emit("loaded", { range, mb: this.engine.bytesLoaded / 2 ** 20 });
+    // From here this device is in the chain, so it must not be allowed to doze.
+    keepAwake().catch(() => {});
+    this._calibrate();
     return this.engine;
   }
 
-  // ---------------------------------------------------------------- start
-  // Baseline placement: even split over everyone, in join order. Replaced by
-  // scheduler/plan.js once profiling lands -- and kept, so the two can be compared.
-  planEven(deviceIds, layers) {
-    const n = deviceIds.length;
-    const base = Math.floor(layers / n);
-    const extra = layers % n;
-    const ranges = [];
-    let at = 0;
-    for (let i = 0; i < n; i++) {
-      const take = base + (i < extra ? 1 : 0);
-      ranges.push([at, at + take]);
-      at += take;
+  // Second-phase profiling: now that real layers are loaded, time the real thing.
+  //
+  // The pre-load probe has to be synthetic -- placement is decided before anyone has
+  // any weights -- but a synthetic number can be wrong for reasons that matter. A
+  // backgrounded tab or a phone with its screen off is throttled hard by the browser,
+  // and a device that measured fast at join can be several times slower by the time it
+  // is holding layers. Left uncorrected, that device silently sets the pace for every
+  // token in the room.
+  _calibrate() {
+    if (!this.engine || !this.engine.layerCount) return;
+    const n = this.engine.layerCount;
+    const x = new Float32Array(this.spec.hidden);
+    for (let i = 0; i < x.length; i++) x[i] = Math.sin(i * 0.31) * 0.7;
+
+    const runs = [];
+    for (let i = 0; i < 5; i++) {
+      const t0 = performance.now();
+      this.engine.runHidden(x, i);
+      runs.push((performance.now() - t0) / n);
     }
-    return ranges;
+    this.engine.reset();                       // undo the cache these probes wrote
+    runs.sort((a, b) => a - b);
+    const measured = runs[runs.length >> 1];
+
+    const before = this.myProfile.msPerLayer;
+    this.myProfile.msPerLayer = measured;
+    this.myProfile.calibrated = true;
+    this._announce();
+
+    const drift = measured / before;
+    this._emit("calibrated", { before, after: measured, drift });
+    if (drift > 1.5 || drift < 0.67) {
+      this._emit("recalibrated", { before, after: measured, drift });
+    }
   }
 
-  async start(plan = null) {
+  // ---------------------------------------------------------------- start
+  //
+  // Solve, then act on the answer -- including when the answer is "someone else
+  // should be host". Whoever pressed Start is not necessarily the right device to
+  // run the LM head, and that decision is worth more than any layer cut: the head
+  // is ~8 layers of arithmetic and it is serial on the host.
+  async start({ strategy = "optimal" } = {}) {
+    if (!this.myProfile) { this._emit("error", "still measuring this device"); return; }
+
+    const devices = this._devices();
+    const p = solvePlan(this.spec, devices, this._rtt(), { strategy });
+    if (!p) {
+      this._emit("error", `no feasible plan: the room pledges too little memory for ${MODELS[this.model].label}`);
+      return;
+    }
+    this.lastPlan = p;
+    this._emit("planned", p);
+
+    if (p.host !== this.id) {
+      // The planner elected someone else. Hand over rather than overrule it.
+      const name = this.peers.find((x) => x.id === p.host)?.name || p.host;
+      this._emit("handoff", p.host, name);
+      this.mesh.send(p.host, { t: "become-host", strategy });
+      return;
+    }
+    await this._deal(p);
+  }
+
+  async _deal(p) {
     this.isHost = true;
     this.hostId = this.id;
     this._readyCount = 0;
 
-    const workers = this.peers.filter((p) => p.ready).map((p) => p.id);
-    const order = [this.id, ...workers];
-    const L = MODELS[this.model].layers;
-    const ranges = plan || this.planEven(order, L);
-
+    const workers = p.chain.slice(1);
     this.chain = workers;
-    this._emit("plan", order.map((id, i) => ({ id, range: ranges[i], self: id === this.id })));
+    this._emit("plan", p.chain.map((id, i) => ({ id, range: p.ranges[i], self: id === this.id })));
 
-    // Tell each worker its range and who it forwards to. The last one returns to me.
-    for (let i = 1; i < order.length; i++) {
-      this.mesh.send(order[i], {
+    // Each worker learns its range and who it forwards to; the last returns to me.
+    for (let i = 1; i < p.chain.length; i++) {
+      this.mesh.send(p.chain[i], {
         t: "deal",
         model: this.model,
-        range: ranges[i],
-        next: i + 1 < order.length ? order[i + 1] : null,
+        range: p.ranges[i],
+        next: i + 1 < p.chain.length ? p.chain[i + 1] : null,
         host: this.id,
       });
     }
+    // Devices the planner left out are told why, rather than left wondering.
+    for (const id of p.dropped) {
+      this.mesh.send(id, { t: "stand-by", why: p.why.find((w) => w.includes(this.peers.find((x) => x.id === id)?.name || " ")) || "not needed for this plan" });
+    }
 
-    this.range = ranges[0];
+    this.range = p.ranges[0];
     this.next = workers[0] || null;
     await this._load(this.range, true, true);
 

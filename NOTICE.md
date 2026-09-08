@@ -51,3 +51,11 @@ the idea of scheduling a swarm. We are claiming to have built and measured one.
 
 Model weights and tokenizers come from their respective publishers under their own
 licenses and are not redistributed here.
+
+## Addendum: techniques noted while reading prior art
+
+| Technique | Seen in | Ours |
+|---|---|---|
+| A muted looping video keeps a mobile browser from dozing where Screen Wake Lock is unavailable | SwarmLLM `room.js` | `room/awake.js` prefers the Screen Wake Lock API and keeps the video only as a fallback. The trick is a well-known mobile-web workaround, not that project's invention |
+| Drop a device whose share rounds to one layer; for small models put everything on one device | prima.cpp / Halda ([arXiv:2504.08791](https://arxiv.org/abs/2504.08791)) | Our subset search reaches the same conclusions from a measured cost model, without an ILP solver |
+| Ring partitioning proportional to device memory | [exo](https://github.com/exo-explore/exo) | Reproduced faithfully as our `memory` baseline, so the comparison is fair |
