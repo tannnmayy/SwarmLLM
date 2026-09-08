@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI Swarm · Device Probe</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d0e12; --card:#16171c; --line:#262832; --fg:#e8e9ee; --dim:#8b8fa3; --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#2b4eff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; padding:16px; padding-bottom:48px; }
+  h1 { font-size:18px; margin:0 0 2px; letter-spacing:-.01em; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 8px; font-weight:600; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:3px 0; font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); flex:0 0 auto; }
+  .row .v { text-align:right; word-break:break-word; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  button { background:var(--acc); color:#fff; border:0; border-radius:9px; padding:11px 16px; font:inherit; font-weight:600; cursor:pointer; width:100%; margin-bottom:8px; }
+  button.ghost { background:#22242e; }
+  button:disabled { opacity:.5; }
+  #verdict { font-size:15px; font-weight:600; padding:12px 14px; border-radius:10px; margin-bottom:12px; display:none; }
+  textarea { width:100%; height:150px; background:#0a0b0e; color:var(--dim); border:1px solid var(--line); border-radius:9px; padding:9px; font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .name { display:flex; gap:8px; margin-bottom:10px; }
+  .name input { flex:1; background:#0a0b0e; border:1px solid var(--line); color:var(--fg); border-radius:9px; padding:11px; font:inherit; }
+</style>
+</head>
+<body>
+<h1>AI Swarm · Device Probe</h1>
+<div class="sub">Run on every device that will join the demo room. Then press Copy and send the text back.</div>
+
+<div class="name"><input id="label" placeholder="Name this device (e.g. Tanmay PC, Pixel 8)"></div>
+<button id="go">Run full probe</button>
+<div id="verdict"></div>
+<div id="out"></div>
+<button class="ghost" id="copy">Copy results</button>
+<textarea id="blob" readonly placeholder="Results appear here after the probe runs."></textarea>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const R = {};
+const cards = new Map();
+
+function card(title) {
+  let c = cards.get(title);
+  if (!c) {
+    c = document.createElement("div");
+    c.className = "card";
+    const h = document.createElement("h2");
+    h.textContent = title;
+    c.appendChild(h);
+    $("out").appendChild(c);
+    cards.set(title, c);
+  }
+  return c;
+}
+function row(title, k, v, cls) {
+  const c = card(title);
+  const d = document.createElement("div");
+  d.className = "row";
+  const ks = document.createElement("span"); ks.className = "k"; ks.textContent = k;
+  const vs = document.createElement("span"); vs.className = "v " + (cls || ""); vs.textContent = String(v);
+  d.append(ks, vs); c.appendChild(d);
+  return vs;
+}
+const gb = b => (b / 2 ** 30).toFixed(2) + " GB";
+
+// ---------------------------------------------------------------- platform
+let storageCell = null;
+function platform() {
+  const n = navigator;
+  R.label = $("label").value.trim() || "unnamed";
+  R.ua = n.userAgent;
+  R.cores = n.hardwareConcurrency || null;
+  R.deviceMemoryGB = n.deviceMemory || null;
+  R.screen = screen.width + "x" + screen.height + " @" + devicePixelRatio;
+  R.secure = isSecureContext;
+  row("Platform", "device", R.label);
+  row("Platform", "cores", R.cores == null ? "hidden" : R.cores);
+  row("Platform", "RAM hint", R.deviceMemoryGB ? R.deviceMemoryGB + " GB" : "hidden (Safari)");
+  row("Platform", "screen", R.screen);
+  row("Platform", "secure context", R.secure ? "yes" : "NO - WebGPU/WebRTC need https or localhost", R.secure ? "ok" : "bad");
+  storageCell = row("Platform", "storage quota", "checking...");
+}
+
+// ---------------------------------------------------------------- sensors
+async function sensors() {
+  R.pressureObserver = typeof PressureObserver !== "undefined";
+  R.batteryAPI = typeof navigator.getBattery === "function";
+  row("Thermal & battery", "PressureObserver", R.pressureObserver ? "yes" : "no", R.pressureObserver ? "ok" : "warn");
+  if (R.batteryAPI) {
+    try {
+      const b = await navigator.getBattery();
+      R.battery = { level: b.level, charging: b.charging };
+      row("Thermal & battery", "battery", Math.round(b.level * 100) + "% " + (b.charging ? "charging" : "on battery"), "ok");
+    } catch { R.batteryAPI = false; }
+  }
+  if (!R.batteryAPI) row("Thermal & battery", "Battery API", "no", "warn");
+  if (!R.pressureObserver && !R.batteryAPI) row("Thermal & battery", "note", "slide 7 thermal claim unbackable here", "warn");
+  try {
+    const est = await (navigator.storage && navigator.storage.estimate ? navigator.storage.estimate() : null);
+    if (est && storageCell) {
+      R.storageQuotaGB = +(est.quota / 2 ** 30).toFixed(2);
+      storageCell.textContent = gb(est.quota);
+      if (est.quota < 600 * 2 ** 20) storageCell.className = "v warn";
+    }
+  } catch {}
+}
+
+// ---------------------------------------------------------------- webgpu
+const GEMV = `
+struct Dims { rows: u32, cols: u32 };
+@group(0) @binding(0) var<storage, read> W: array<f32>;
+@group(0) @binding(1) var<storage, read> x: array<f32>;
+@group(0) @binding(2) var<storage, read_write> y: array<f32>;
+@group(0) @binding(3) var<uniform> d: Dims;
+var<workgroup> partial: array<f32, 64>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
+  let row = wid.x;
+  var acc = 0.0;
+  var i = lid.x;
+  loop {
+    if (i >= d.cols) { break; }
+    acc = acc + W[row * d.cols + i] * x[i];
+    i = i + 64u;
+  }
+  partial[lid.x] = acc;
+  workgroupBarrier();
+  var s = 32u;
+  loop {
+    if (s == 0u) { break; }
+    if (lid.x < s) { partial[lid.x] = partial[lid.x] + partial[lid.x + s]; }
+    workgroupBarrier();
+    s = s >> 1u;
+  }
+  if (lid.x == 0u) { y[row] = partial[0]; }
+}`;
+
+async function webgpu() {
+  if (!navigator.gpu) {
+    R.webgpu = false;
+    row("WebGPU", "support", "NOT AVAILABLE - cannot hold a slice", "bad");
+    return;
+  }
+  let adapter = null;
+  try { adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }); }
+  catch (e) { R.gpuError = String(e); }
+  if (!adapter) {
+    R.webgpu = false;
+    row("WebGPU", "adapter", "navigator.gpu exists but no adapter", "bad");
+    return;
+  }
+  R.webgpu = true;
+  let info = {};
+  try { info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {}); } catch {}
+  R.gpu = { vendor: info.vendor || "?", architecture: info.architecture || "?", device: info.device || "", description: info.description || "" };
+  const L = adapter.limits;
+  R.limits = {
+    maxBufferSize: L.maxBufferSize,
+    maxStorageBufferBindingSize: L.maxStorageBufferBindingSize,
+    maxComputeWorkgroupStorageSize: L.maxComputeWorkgroupStorageSize,
+    maxComputeInvocationsPerWorkgroup: L.maxComputeInvocationsPerWorkgroup
+  };
+  R.f16 = adapter.features.has("shader-f16");
+  const desc = (R.gpu.vendor + " " + R.gpu.architecture + " " + R.gpu.device).trim();
+  row("WebGPU", "adapter", desc || "(masked)", "ok");
+  row("WebGPU", "shader-f16", R.f16 ? "yes" : "no (f32 only - 2x memory)", R.f16 ? "ok" : "warn");
+  row("WebGPU", "maxBufferSize", gb(L.maxBufferSize));
+  row("WebGPU", "maxStorageBinding", gb(L.maxStorageBufferBindingSize));
+
+  const CHUNK = 64 * 2 ** 20;
+  const device = await adapter.requestDevice({
+    requiredLimits: {
+      maxBufferSize: Math.min(L.maxBufferSize, 256 * 2 ** 20),
+      maxStorageBufferBindingSize: Math.min(L.maxStorageBufferBindingSize, 256 * 2 ** 20)
+    }
+  });
+  if (device.addEventListener) device.addEventListener("uncapturederror", e => { R.gpuUncaptured = String(e.error); });
+
+  // how much can we actually hold? 64 MB at a time, capped at 2 GB
+  const held = [];
+  let allocated = 0;
+  device.pushErrorScope("out-of-memory");
+  try {
+    for (let i = 0; i < 32; i++) {
+      held.push(device.createBuffer({ size: CHUNK, usage: GPUBufferUsage.STORAGE }));
+      allocated += CHUNK;
+    }
+  } catch { /* allocation threw before the scope caught it */ }
+  const oom = await device.popErrorScope();
+  if (oom) allocated = Math.max(0, allocated - CHUNK);
+  R.allocatedBytes = allocated;
+  R.allocationCapped = allocated >= 32 * CHUNK;
+  for (const b of held) b.destroy();
+  row("WebGPU", "allocated OK", gb(allocated) + (R.allocationCapped ? " (probe cap)" : ""),
+      allocated >= 512 * 2 ** 20 ? "ok" : "warn");
+
+  // GEMV bandwidth: this is the msPerLayer predictor the scheduler will use
+  const rows = 2048, cols = 2048, N = rows * cols;
+  const W = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const x = device.createBuffer({ size: cols * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const y = device.createBuffer({ size: rows * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const u = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(u, 0, new Uint32Array([rows, cols, 0, 0]));
+  device.queue.writeBuffer(x, 0, new Float32Array(cols).fill(1 / cols));
+  const chunk = new Float32Array(cols);
+  for (let i = 0; i < cols; i++) chunk[i] = (i % 17) * 0.01;
+  for (let r = 0; r < rows; r++) device.queue.writeBuffer(W, r * cols * 4, chunk);
+
+  const mod = device.createShaderModule({ code: GEMV });
+  const pipe = device.createComputePipeline({ layout: "auto", compute: { module: mod, entryPoint: "main" } });
+  const bg = device.createBindGroup({
+    layout: pipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: W } }, { binding: 1, resource: { buffer: x } },
+      { binding: 2, resource: { buffer: y } }, { binding: 3, resource: { buffer: u } }
+    ]
+  });
+  const pass = n => {
+    const enc = device.createCommandEncoder();
+    for (let k = 0; k < n; k++) {
+      const p = enc.beginComputePass();
+      p.setPipeline(pipe); p.setBindGroup(0, bg); p.dispatchWorkgroups(rows); p.end();
+    }
+    device.queue.submit([enc.finish()]);
+    return device.queue.onSubmittedWorkDone();
+  };
+
+  await pass(4);
+  const ITERS = 24;
+  let t0 = performance.now(); await pass(ITERS);
+  const perDispatch = (performance.now() - t0) / ITERS;
+  t0 = performance.now(); for (let k = 0; k < 8; k++) await pass(1);
+  const perSubmit = (performance.now() - t0) / 8;
+
+  R.gemvMs = +perDispatch.toFixed(3);
+  R.gemvMsPerSubmit = +perSubmit.toFixed(3);
+  R.effectiveGBps = +((N * 4) / perDispatch / 1e6).toFixed(1);
+  R.submitOverheadMs = +(perSubmit - perDispatch).toFixed(3);
+
+  const stage = device.createBuffer({ size: rows * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc2 = device.createCommandEncoder();
+  enc2.copyBufferToBuffer(y, 0, stage, 0, rows * 4);
+  device.queue.submit([enc2.finish()]);
+  await stage.mapAsync(GPUMapMode.READ);
+  const got = new Float32Array(stage.getMappedRange().slice(0));
+  stage.unmap();
+  let expect = 0;
+  for (let i = 0; i < cols; i++) expect += (i % 17) * 0.01 * (1 / cols);
+  R.gemvErr = Math.abs(got[0] - expect);
+  R.gemvConsistent = got.every(v => Math.abs(v - got[0]) < 1e-4);
+  const numOk = R.gemvConsistent && R.gemvErr < 1e-3;
+
+  row("Compute", "GEMV (16 MB read)", R.gemvMs + " ms");
+  row("Compute", "effective bandwidth", R.effectiveGBps + " GB/s", R.effectiveGBps > 20 ? "ok" : "warn");
+  row("Compute", "per-submit overhead", R.submitOverheadMs.toFixed(2) + " ms", R.submitOverheadMs < 5 ? "ok" : "warn");
+  row("Compute", "numerics", numOk ? "correct" : "MISMATCH - kernel wrong here", numOk ? "ok" : "bad");
+
+  for (const b of [W, x, y, u, stage]) b.destroy();
+  if (device.destroy) device.destroy();
+}
+
+// ---------------------------------------------------------------- webrtc
+async function webrtc() {
+  const types = new Set();
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }]
+  });
+  pc.createDataChannel("probe");
+  const done = new Promise(res => {
+    const t = setTimeout(res, 6000);
+    pc.onicecandidate = e => {
+      if (!e.candidate) { clearTimeout(t); return res(); }
+      const c = e.candidate.candidate;
+      const m = /typ (\w+)/.exec(c);
+      const ip = /candidate:\S+ \d+ \w+ \d+ (\S+)/.exec(c);
+      if (!m) return;
+      types.add(m[1]);
+      if (m[1] === "srflx" && ip) R.publicIP = ip[1];
+      if (m[1] === "host" && ip && !ip[1].includes(":") && !/\.local$/.test(ip[1]) && !R.lanIP) R.lanIP = ip[1];
+    };
+  });
+  await pc.setLocalDescription(await pc.createOffer());
+  await done;
+  pc.close();
+  R.iceTypes = [...types];
+  R.hasHostCandidate = types.has("host");
+  R.hasSrflx = types.has("srflx");
+  row("WebRTC", "candidate types", R.iceTypes.join(", ") || "NONE", R.hasHostCandidate ? "ok" : "bad");
+  row("WebRTC", "LAN address", R.lanIP || "mDNS-masked (normal in Chrome)", R.lanIP ? "ok" : "warn");
+  row("WebRTC", "STUN reflexive", R.hasSrflx ? "yes - cross-network possible" : "no - LAN-only or STUN blocked", R.hasSrflx ? "ok" : "warn");
+  if (!R.hasHostCandidate) row("WebRTC", "note", "no host candidate: P2P will not work here", "bad");
+}
+
+// ---------------------------------------------------------------- verdict
+function verdict() {
+  const v = $("verdict");
+  v.style.display = "block";
+  const canJoin = R.webgpu && R.hasHostCandidate;
+  const canHost = canJoin && R.allocatedBytes >= 512 * 2 ** 20;
+  R.verdict = !R.webgpu ? "CANNOT JOIN - no WebGPU"
+            : !R.hasHostCandidate ? "CANNOT JOIN - no WebRTC host candidate"
+            : canHost ? "HOST-CAPABLE" : "WORKER ONLY";
+  v.textContent = R.verdict + (R.webgpu ? " · " + R.effectiveGBps + " GB/s · " + gb(R.allocatedBytes) + " usable" : "");
+  v.style.background = canHost ? "#123a22" : canJoin ? "#3a3212" : "#3a1614";
+  v.style.color = canHost ? "#3ddc84" : canJoin ? "#ffb02e" : "#ff5f56";
+}
+
+$("go").onclick = async () => {
+  const btn = $("go");
+  btn.disabled = true; btn.textContent = "probing...";
+  $("out").innerHTML = ""; cards.clear();
+  R.t = new Date().toISOString();
+  platform();
+  try { await sensors(); } catch (e) { R.sensorError = String(e); }
+  try { await webgpu(); } catch (e) { R.gpuError = String(e); row("WebGPU", "error", String(e), "bad"); }
+  try { await webrtc(); } catch (e) { R.rtcError = String(e); row("WebRTC", "error", String(e), "bad"); }
+  verdict();
+  $("blob").value = JSON.stringify(R, null, 1);
+  btn.disabled = false; btn.textContent = "Run again";
+};
+$("copy").onclick = async () => {
+  const t = $("blob");
+  t.select();
+  try { await navigator.clipboard.writeText(t.value); $("copy").textContent = "Copied - send it back"; }
+  catch { document.execCommand("copy"); $("copy").textContent = "Copied"; }
+  setTimeout(() => { $("copy").textContent = "Copy results"; }, 2500);
+};
+</script>
+</body>
+</html>

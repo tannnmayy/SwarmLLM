@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI Swarm · Mesh Test</title>
+<style>
+  :root { color-scheme: dark; --bg:#0d0e12; --card:#16171c; --line:#262832; --fg:#e8e9ee; --dim:#8b8fa3; --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#2b4eff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; padding:16px; padding-bottom:40px; }
+  h1 { font-size:17px; margin:0 0 2px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin:0 0 8px; font-weight:600; }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:3px 0; font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); } .row .v { text-align:right; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  button { background:var(--acc); color:#fff; border:0; border-radius:9px; padding:11px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:#22242e; }
+  button:disabled { opacity:.45; cursor:default; }
+  input { background:#0a0b0e; border:1px solid var(--line); color:var(--fg); border-radius:9px; padding:11px; font:inherit; }
+  .bar { display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+  .bar input { flex:1; min-width:120px; }
+  #code { font:700 22px/1 ui-monospace,Menlo,monospace; letter-spacing:.18em; }
+  .peer { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-top:1px solid var(--line); }
+  .peer:first-of-type { border-top:0; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); display:inline-block; margin-right:7px; }
+  .dot.on { background:var(--ok); }
+  #log { font:11px/1.5 ui-monospace,Menlo,monospace; color:var(--dim); max-height:190px; overflow:auto; white-space:pre-wrap; }
+  .join { color:var(--dim); font-size:11px; word-break:break-all; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>AI Swarm · Mesh Test</h1>
+<div class="sub">Gate for H0&ndash;6: two devices connect directly and a tensor survives the trip.</div>
+
+<div class="bar">
+  <input id="name" placeholder="your device name">
+  <input id="room" placeholder="room code" maxlength="8" style="max-width:120px;text-transform:uppercase">
+  <button id="go">Join</button>
+</div>
+
+<div class="card">
+  <h2>Room</h2>
+  <div class="row"><span class="k">code</span><span class="v" id="code">—</span></div>
+  <div class="row"><span class="k">my id</span><span class="v dim" id="me">—</span></div>
+  <div class="row"><span class="k">signaling</span><span class="v" id="sig">not connected</span></div>
+  <div class="join" id="joinurl"></div>
+</div>
+
+<div class="card">
+  <h2>Peers <span id="npeers" class="dim"></span></h2>
+  <div id="peers"><span class="dim">nobody yet — open this page on another device with the same code</span></div>
+</div>
+
+<div class="card">
+  <h2>Tensor bounce</h2>
+  <div class="bar">
+    <button id="bounce" disabled>Bounce 576 floats</button>
+    <button id="bounce5k" class="ghost" disabled>Bounce 5120</button>
+    <button id="storm" class="ghost" disabled>50× storm</button>
+  </div>
+  <div id="results"></div>
+</div>
+
+<div class="card"><h2>Log</h2><div id="log"></div></div>
+
+<script type="module">
+import { Mesh } from "./room/mesh.js";
+import { packF16, unpackF16, looksBad } from "./room/wire.js";
+
+const $ = (id) => document.getElementById(id);
+const log = (s, cls = "") => {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = new Date().toLocaleTimeString() + "  " + s;
+  $("log").prepend(d);
+};
+const row = (k, v, cls = "") =>
+  `<div class="row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+
+// room code from the URL so a join link just works
+const hash = new URLSearchParams(location.hash.slice(1));
+$("room").value = (hash.get("r") || "").toUpperCase();
+$("name").value = localStorage.getItem("swarm-name") ||
+  (/Android/i.test(navigator.userAgent) ? "Android" :
+   /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "PC");
+
+let mesh = null;
+const pending = new Map();   // key -> {resolve, sent, t0}
+
+function renderPeers() {
+  const list = mesh ? mesh.roster() : [];
+  $("npeers").textContent = list.length ? `· ${list.length}` : "";
+  if (!list.length) {
+    $("peers").innerHTML = '<span class="dim">nobody yet — open this page on another device with the same code</span>';
+    $("bounce").disabled = $("bounce5k").disabled = $("storm").disabled = true;
+    return;
+  }
+  $("peers").innerHTML = list.map((p) => `
+    <div class="peer">
+      <span><span class="dot ${p.ready ? "on" : ""}"></span>${p.name}<span class="dim"> · ${p.id}</span></span>
+      <span class="v">${p.rtt == null ? "—" : p.rtt + " ms"}</span>
+    </div>`).join("");
+  const anyReady = list.some((p) => p.ready);
+  $("bounce").disabled = $("bounce5k").disabled = $("storm").disabled = !anyReady;
+}
+
+async function join() {
+  const code = ($("room").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "") ||
+    Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
+  const name = $("name").value.trim() || "device";
+  localStorage.setItem("swarm-name", name);
+  $("go").disabled = true;
+
+  mesh = new Mesh({ room: code, name, meta: { ua: navigator.userAgent.slice(0, 60) } });
+
+  mesh.on("peer", (p) => { log("link open to " + p.name + " (" + p.id + ")", "ok"); renderPeers(); });
+  mesh.on("left", (id, why) => { log("peer " + id + " gone: " + why, "warn"); renderPeers(); });
+  mesh.on("roster", renderPeers);
+  mesh.on("signal-lost", () => { $("sig").textContent = "signaling dropped"; $("sig").className = "v bad"; });
+
+  // Echo any frame straight back. The other side times the round trip.
+  mesh.on("frame", (from, f) => {
+    if (f.flags === 0) {
+      mesh.sendFrame(from, { t: "hidden-ret", pos: f.pos, n: f.n, flags: 1, data: f.data });
+      return;
+    }
+    const key = from + ":" + f.pos;
+    const w = pending.get(key);
+    if (w) { pending.delete(key); w.resolve(f); }
+  });
+
+  try {
+    const { id, room } = await mesh.connect();
+    $("code").textContent = room;
+    $("me").textContent = id;
+    $("sig").textContent = "connected";
+    $("sig").className = "v ok";
+    location.hash = "r=" + room;
+    const url = location.origin + location.pathname + "#r=" + room;
+    $("joinurl").textContent = "join link: " + url;
+    log("joined room " + room + " as " + id, "ok");
+  } catch (e) {
+    log("join failed: " + e.message, "bad");
+    $("sig").textContent = "failed";
+    $("sig").className = "v bad";
+    $("go").disabled = false;
+  }
+  renderPeers();
+}
+
+let posSeq = 1000;
+
+function bounceOnce(peerId, n) {
+  const src = new Float32Array(n);
+  for (let i = 0; i < n; i++) src[i] = Math.sin(i * 0.37 + posSeq) * 3.5;
+  const data = packF16(src);
+  const expected = unpackF16(data);          // what the far side must return, exactly
+  const pos = posSeq++;
+  const key = peerId + ":" + pos;
+  const t0 = performance.now();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(key); reject(new Error("timeout")); }, 8000);
+    pending.set(key, {
+      resolve: (f) => {
+        clearTimeout(timer);
+        const back = unpackF16(f.data);
+        let exact = back.length === expected.length;
+        if (exact) for (let i = 0; i < back.length; i++) if (back[i] !== expected[i]) { exact = false; break; }
+        resolve({ ms: performance.now() - t0, exact, bytes: data.byteLength, clean: !looksBad(back) });
+      },
+    });
+    if (!mesh.sendFrame(peerId, { t: "hidden", pos, n: 1, flags: 0, data })) {
+      clearTimeout(timer); pending.delete(key); reject(new Error("wire not open"));
+    }
+  });
+}
+
+async function runBounce(n, times = 1) {
+  const peer = mesh.roster().find((p) => p.ready);
+  if (!peer) return;
+  const out = [];
+  for (let i = 0; i < times; i++) {
+    try { out.push(await bounceOnce(peer.id, n)); }
+    catch (e) { log("bounce failed: " + e.message, "bad"); return; }
+  }
+  const ms = out.map((r) => r.ms).sort((a, b) => a - b);
+  const med = ms[ms.length >> 1];
+  const exact = out.every((r) => r.exact);
+  const clean = out.every((r) => r.clean);
+  const bytes = out[0].bytes;
+  $("results").innerHTML =
+    row("peer", peer.name) +
+    row("payload", n + " floats · " + bytes + " B f16") +
+    row("round trips", times) +
+    row("median RTT", med.toFixed(1) + " ms") +
+    row("best / worst", ms[0].toFixed(1) + " / " + ms[ms.length - 1].toFixed(1) + " ms") +
+    row("one-way est.", (med / 2).toFixed(1) + " ms") +
+    row("bit-exact", exact ? "yes — every element identical" : "NO — payload corrupted", exact ? "ok" : "bad") +
+    row("finite", clean ? "yes" : "NaN/Inf present", clean ? "ok" : "bad");
+  log(`bounce ${n}f ×${times}: median ${med.toFixed(1)} ms, ${exact ? "bit-exact" : "CORRUPT"}`, exact ? "ok" : "bad");
+}
+
+$("go").onclick = join;
+$("bounce").onclick = () => runBounce(576, 1);
+$("bounce5k").onclick = () => runBounce(5120, 1);
+$("storm").onclick = () => runBounce(576, 50);
+if ($("room").value) join();
+</script>
+</body>
+</html>

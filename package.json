@@ -1,0 +1,16 @@
+{
+  "name": "ai-swarm",
+  "version": "0.1.0",
+  "description": "Peer-to-peer LLM inference across browser tabs, with a measured scheduler that solves layer placement.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "serve": "node tools/serve.mjs 8443",
+    "signal": "node tools/signal.mjs 9443",
+    "dev": "node tools/dev.mjs",
+    "cert": "bash tools/make-cert.sh"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
