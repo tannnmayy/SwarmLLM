@@ -15,8 +15,33 @@
 // A slice loads only the layer files it was dealt: `download only your layers` is a
 // property of the loader, not a claim in a slide.
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+// Isomorphic: Node reads files, the browser fetches URLs, and `dir` is a path in one
+// case and a URL prefix in the other. Everything below this boundary is identical, so
+// the reference run in Node and the slice running on a phone execute the same code.
+const inNode = typeof window === "undefined";
+
+async function readBytes(dir, file) {
+  if (inNode) {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const b = await readFile(join(dir, file));
+    return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  }
+  const res = await fetch(dir.replace(/\/$/, "") + "/" + file);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${file}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+async function readJSON(dir, file) {
+  if (inNode) {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    return JSON.parse(await readFile(join(dir, file), "utf8"));
+  }
+  const res = await fetch(dir.replace(/\/$/, "") + "/" + file);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${file}`);
+  return res.json();
+}
 
 const f32buf = new Float32Array(1);
 const u32buf = new Uint32Array(f32buf.buffer);
@@ -43,41 +68,53 @@ function widen(u16) {
 }
 
 async function loadShard(dir, entry) {
-  const buf = await readFile(join(dir, entry.file));
-  const u16 = new Uint16Array(buf.buffer, buf.byteOffset, buf.byteLength / 2);
+  const bytes = await readBytes(dir, entry.file);
+  // .slice() rather than a view: the fetched buffer may not be 2-byte aligned
+  const u16 = new Uint16Array(bytes.slice().buffer);
   const out = {};
   for (const t of entry.index) out[t.name] = widen(u16.subarray(t.offset / 2, t.offset / 2 + t.length));
   return out;
 }
 
 export class CpuEngine {
-  static async load(dir, { layerRange, hasEmbed = false, hasHead = false, maxSeq = 512 } = {}) {
-    const manifest = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
+  static async load(dir, { layerRange, hasEmbed = false, hasHead = false, maxSeq = 512, onProgress = null } = {}) {
+    const manifest = await readJSON(dir, "manifest.json");
     const C = manifest.config;
     const [lo, hi] = layerRange || [0, C.layers];
 
     const e = new CpuEngine();
     e.cfg = C;
+    e.manifest = manifest;
     e.lo = lo; e.hi = hi;
     e.hasEmbed = hasEmbed;
     e.hasHead = hasHead;
     e.maxSeq = maxSeq;
     e.bytesLoaded = 0;
 
+    // total up front so progress is a real fraction, not a spinner
+    let todo = 0;
+    for (let i = lo; i < hi; i++) todo += manifest.shards.layers[i].bytes;
+    if (hasEmbed || (hasHead && C.tiedEmbeddings)) todo += manifest.shards.embed.bytes;
+    if (hasHead) todo += manifest.shards.final.bytes;
+    const tick = () => onProgress && onProgress(e.bytesLoaded / todo, e.bytesLoaded, todo);
+
     e.layers = [];
     for (let i = lo; i < hi; i++) {
       e.layers.push(await loadShard(dir, manifest.shards.layers[i]));
       e.bytesLoaded += manifest.shards.layers[i].bytes;
+      tick();
     }
     if (hasEmbed || (hasHead && C.tiedEmbeddings)) {
       e.embed = (await loadShard(dir, manifest.shards.embed)).embed;
       e.bytesLoaded += manifest.shards.embed.bytes;
+      tick();
     }
     if (hasHead) {
       const f = await loadShard(dir, manifest.shards.final);
       e.finalNorm = f.finalNorm;
       e.lmHead = C.tiedEmbeddings ? e.embed : f.lmHead;
       e.bytesLoaded += manifest.shards.final.bytes;
+      tick();
     }
 
     const D = C.hiddenSize, KVD = C.kvHeads * C.headDim;

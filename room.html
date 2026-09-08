@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AI Swarm</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0c10; --card:#15161c; --line:#25272f; --fg:#e9eaf0; --dim:#868ba0;
+          --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#3b5bff; --acc2:#7c5cff; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         padding:16px; padding-bottom:32px; max-width:760px; margin-inline:auto; }
+  header { display:flex; align-items:baseline; gap:10px; margin-bottom:3px; }
+  h1 { font-size:19px; margin:0; letter-spacing:-.02em; }
+  .tag { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
+         border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 15px; margin-bottom:11px; }
+  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--dim); margin:0 0 9px; font-weight:600;
+             display:flex; justify-content:space-between; align-items:center; }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:3px 0; font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); } .row .v { text-align:right; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  button { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:11px 15px;
+           font:inherit; font-weight:600; cursor:pointer; }
+  button.ghost { background:#232631; }
+  button:disabled { opacity:.4; cursor:default; }
+  input { background:#0a0b0f; border:1px solid var(--line); color:var(--fg); border-radius:10px; padding:11px; font:inherit; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; }
+  .bar input { flex:1; min-width:110px; }
+  #code { font:800 26px/1 ui-monospace,Menlo,monospace; letter-spacing:.2em; color:var(--fg); }
+  .hide { display:none !important; }
+
+  .dev { display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line); }
+  .dev:first-child { border-top:0; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); flex:0 0 auto; }
+  .dot.on { background:var(--ok); } .dot.me { background:var(--acc2); }
+  .dev .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dev .lay { font:11px ui-monospace,Menlo,monospace; color:var(--acc2); background:#1b1d2b;
+              border-radius:6px; padding:2px 7px; flex:0 0 auto; }
+  .dev .rtt { color:var(--dim); font-variant-numeric:tabular-nums; font-size:12px; flex:0 0 auto; min-width:46px; text-align:right; }
+  .pbar { height:3px; background:#1d1f28; border-radius:2px; overflow:hidden; margin-top:5px; }
+  .pbar i { display:block; height:100%; background:var(--acc); width:0; transition:width .25s; }
+
+  #chat { min-height:120px; max-height:44vh; overflow:auto; }
+  .msg { margin-bottom:12px; }
+  .msg .who { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em; margin-bottom:2px; }
+  .msg .txt { white-space:pre-wrap; word-wrap:break-word; }
+  .msg.a .txt { color:var(--fg); }
+  .msg.q .txt { color:var(--dim); }
+  .cursor::after { content:"▍"; color:var(--acc2); animation:b 1s steps(2) infinite; }
+  @keyframes b { 50% { opacity:0; } }
+  .strip { display:flex; gap:14px; flex-wrap:wrap; font-variant-numeric:tabular-nums; font-size:12px; }
+  .strip b { font-weight:700; font-size:15px; display:block; }
+  .strip span { color:var(--dim); }
+  .join { color:var(--dim); font-size:11px; word-break:break-all; margin-top:9px; }
+  #log { font:11px/1.5 ui-monospace,Menlo,monospace; color:var(--dim); max-height:130px; overflow:auto; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<header><h1>AI Swarm</h1><span class="tag">Team SE7EN</span></header>
+<div class="sub">Many devices, one model &mdash; and it keeps running even if one of them walks away.</div>
+
+<!-- join -->
+<div class="card" id="joinCard">
+  <h2>Join a room</h2>
+  <div class="bar">
+    <input id="name" placeholder="this device's name">
+    <input id="room" placeholder="code" maxlength="8" style="max-width:110px;text-transform:uppercase">
+    <button id="go">Join</button>
+  </div>
+  <div class="dim" style="font-size:11px;margin-top:8px">Leave the code blank to open a new room.</div>
+</div>
+
+<!-- room -->
+<div class="card hide" id="roomCard">
+  <h2>Room <span id="sig" class="dim">connecting</span></h2>
+  <div class="row"><span class="k">code</span><span class="v" id="code">—</span></div>
+  <div class="join" id="joinurl"></div>
+</div>
+
+<div class="card hide" id="devCard">
+  <h2>Devices <span id="ndev" class="dim"></span></h2>
+  <div id="devs"></div>
+  <div class="bar" style="margin-top:11px">
+    <button id="start">Start the swarm</button>
+    <button id="reset" class="ghost hide">New conversation</button>
+  </div>
+  <div class="pbar hide" id="loadBar"><i></i></div>
+  <div class="dim hide" id="loadTxt" style="font-size:11px;margin-top:5px"></div>
+</div>
+
+<!-- chat -->
+<div class="card hide" id="chatCard">
+  <h2>Conversation <span id="model" class="dim"></span></h2>
+  <div id="chat"></div>
+  <div class="bar" style="margin-top:10px">
+    <input id="ask" placeholder="ask the swarm something" autocomplete="off">
+    <button id="send">Send</button>
+  </div>
+</div>
+
+<div class="card hide" id="statCard">
+  <h2>Live measurement</h2>
+  <div class="strip">
+    <div><b id="s-tps">—</b><span>tokens / sec</span></div>
+    <div><b id="s-tok">—</b><span>tokens</span></div>
+    <div><b id="s-hop">—</b><span>median lap</span></div>
+    <div><b id="s-dev">—</b><span>devices</span></div>
+    <div><b id="s-lay">—</b><span>my layers</span></div>
+  </div>
+</div>
+
+<div class="card"><h2>Log</h2><div id="log"></div></div>
+
+<script type="module">
+import { Room, MODELS } from "./room/room.js";
+
+const $ = (id) => document.getElementById(id);
+const show = (id, on = true) => $(id).classList.toggle("hide", !on);
+const log = (s, cls = "") => {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = new Date().toLocaleTimeString().slice(0, 8) + "  " + s;
+  $("log").prepend(d);
+};
+
+const hash = new URLSearchParams(location.hash.slice(1));
+$("room").value = (hash.get("r") || "").toUpperCase();
+$("name").value = localStorage.getItem("swarm-name") ||
+  (/Android/i.test(navigator.userAgent) ? "Android" :
+   /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "PC");
+
+let room = null;
+let myRange = null;
+const rangeOf = new Map();     // peer id -> [lo,hi)
+let answerEl = null;
+
+function renderDevices() {
+  if (!room) return;
+  const peers = room.peers;
+  $("ndev").textContent = `· ${peers.length + 1}`;
+  $("s-dev").textContent = peers.length + 1;
+  const me = {
+    id: room.id, name: ($("name").value || "me") + " (you)", ready: true,
+    rtt: null, self: true,
+  };
+  const all = [me, ...peers];
+  $("devs").innerHTML = all.map((p) => {
+    const r = p.self ? myRange : rangeOf.get(p.id);
+    const lay = r ? `layers ${r[0]}–${r[1] - 1}` : "";
+    return `<div class="dev">
+      <span class="dot ${p.self ? "me" : p.ready ? "on" : ""}"></span>
+      <span class="nm">${p.name}</span>
+      ${lay ? `<span class="lay">${lay}</span>` : ""}
+      <span class="rtt">${p.self ? "" : p.rtt == null ? "—" : p.rtt + " ms"}</span>
+    </div>`;
+  }).join("");
+}
+
+function bubble(cls, who, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.innerHTML = `<div class="who"></div><div class="txt"></div>`;
+  d.children[0].textContent = who;
+  d.children[1].textContent = text;
+  $("chat").appendChild(d);
+  $("chat").scrollTop = $("chat").scrollHeight;
+  return d.children[1];
+}
+
+async function join() {
+  const code = ($("room").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "") ||
+    Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
+  const name = $("name").value.trim() || "device";
+  localStorage.setItem("swarm-name", name);
+  $("go").disabled = true;
+
+  room = new Room({ code, name });
+
+  room.on("roster", renderDevices);
+  room.on("peer-left", (id, why) => { rangeOf.delete(id); log("device left: " + why, "warn"); renderDevices(); });
+  room.on("chain-broken", (id) => {
+    log("CHAIN BROKEN — a device in the pipeline left mid-answer", "bad");
+    bubble("q", "swarm", "A device left the chain mid-answer. Recovery is the next thing we build.");
+  });
+
+  room.on("plan", (plan) => {
+    for (const p of plan) { if (p.self) myRange = p.range; else rangeOf.set(p.id, p.range); }
+    log("dealt: " + plan.map((p) => `${p.range[0]}–${p.range[1] - 1}`).join("  |  "));
+    renderDevices();
+  });
+  room.on("loading", ({ range, pct }) => {
+    show("loadBar", true); show("loadTxt", true);
+    $("loadBar").firstElementChild.style.width = pct + "%";
+    $("loadTxt").textContent = `loading layers ${range[0]}–${range[1] - 1} · ${pct}%`;
+    myRange = range;
+    // Once a device has been dealt a range, nobody may re-deal from it. A second
+    // Start mid-demo would re-cut the model under a live conversation.
+    $("start").disabled = true;
+    $("start").textContent = room.isHost ? "Swarm running" : "Holding layers";
+  });
+  room.on("loaded", ({ range, mb }) => {
+    log(`loaded layers ${range[0]}–${range[1] - 1} (${mb.toFixed(1)} MB)`, "ok");
+    $("s-lay").textContent = range[1] - range[0];
+    renderDevices();
+  });
+  room.on("worker-ready", (id, range) => { rangeOf.set(id, range); log("worker ready: " + range[0] + "–" + (range[1] - 1), "ok"); renderDevices(); });
+  room.on("ready", () => {
+    show("loadBar", false); show("loadTxt", false);
+    show("chatCard", true); show("statCard", true); show("reset", true);
+    $("start").disabled = true;
+    $("model").textContent = MODELS["smollm2-135m"].label;
+    log("swarm online", "ok");
+  });
+  room.on("waiting-for-workers", (n) => log(`waiting for ${n} worker${n > 1 ? "s" : ""} to load`));
+
+  room.on("gen-start", (text, by) => {
+    bubble("q", by === "you" ? "you asked" : by + " asked", text);
+    answerEl = bubble("a", "swarm", "");
+    answerEl.parentElement.classList.add("cursor");
+  });
+  room.on("token", (piece) => {
+    if (!answerEl) answerEl = bubble("a", "swarm", "");
+    answerEl.textContent += piece;
+    $("chat").scrollTop = $("chat").scrollHeight;
+  });
+  room.on("gen-done", (s) => {
+    answerEl?.parentElement.classList.remove("cursor");
+    answerEl = null;
+    $("s-tps").textContent = s.tps ?? "—";
+    $("s-tok").textContent = s.tokens;
+    $("s-hop").textContent = s.medianHopMs == null ? "solo" : s.medianHopMs + " ms";
+    log(`${s.tokens} tokens in ${s.ms} ms — ${s.tps} tok/s` + (s.medianHopMs ? `, median lap ${s.medianHopMs} ms` : ""), "ok");
+  });
+  room.on("reset", () => { $("chat").innerHTML = ""; log("conversation reset"); });
+  room.on("error", (e) => log("error: " + e, "bad"));
+
+  try {
+    const { room: code2 } = await room.join();
+    $("code").textContent = code2;
+    $("sig").textContent = "connected";
+    $("sig").className = "ok";
+    location.hash = "r=" + code2;
+    $("joinurl").textContent = "join link: " + location.origin + location.pathname + "#r=" + code2;
+    show("joinCard", false); show("roomCard", true); show("devCard", true);
+    log("joined room " + code2, "ok");
+    renderDevices();
+  } catch (e) {
+    log("join failed: " + e.message, "bad");
+    $("go").disabled = false;
+  }
+}
+
+$("go").onclick = join;
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  log("dealing layers and loading…");
+  try { await room.start(); } catch (e) { log("start failed: " + e.message, "bad"); $("start").disabled = false; }
+};
+$("reset").onclick = () => room.resetConversation();
+const send = () => {
+  const t = $("ask").value.trim();
+  if (!t || !room) return;
+  $("ask").value = "";
+  room.generate(t);
+};
+$("send").onclick = send;
+$("ask").onkeydown = (e) => { if (e.key === "Enter") send(); };
+if ($("room").value) join();
+</script>
+</body>
+</html>
