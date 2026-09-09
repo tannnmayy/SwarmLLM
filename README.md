@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="tests" src="https://img.shields.io/badge/tests-82%20passing-3ddc84">
+  <img alt="tests" src="https://img.shields.io/badge/tests-134%20passing-3ddc84">
   <img alt="runtime" src="https://img.shields.io/badge/runs%20on-WebRTC%20%2B%20any%20browser-3b5bff">
   <img alt="install" src="https://img.shields.io/badge/install-none-7c5cff">
   <img alt="licence" src="https://img.shields.io/badge/licence-MIT-16171c">
@@ -60,7 +60,7 @@ Everything ticked is backed by a test in this repository or a recorded run, not 
 | Split output identical to a single device | working · **11/11 tests** |
 | End-to-end swarm over WebRTC | working · answer mirrored to every screen |
 | Profiler + placement solver + chain order + host election | working · **29/29 tests** |
-| Fault recovery — a device leaves mid-answer | working · **12/12 tests** · verified live |
+| Fault recovery — a device leaves mid-answer | working · **13/13 tests** · verified live |
 | Weight caching | working · second join downloads nothing |
 | ChatML prompting + multi-turn + honest context limit | working |
 | WebGPU engine | not started — CPU only, ~5 tok/s |
@@ -140,8 +140,9 @@ reset()                  // all    : new conversation, caches back to position 0
 ```
 
 Everything else — the placement solver, the recovery path, the dashboard — is built
-on top of those four. The WebGPU engine, when it lands, is a drop-in behind the same
-interface.
+on top of those four. The imported WebGPU engine exposes the same four, so both are
+reachable through one contract — see [UPSTREAM.md](UPSTREAM.md) for the one place the
+two genuinely differ, and how it was reconciled.
 
 ### Model sharding
 
@@ -369,7 +370,7 @@ node tests/split.test.mjs      # 11 — split output identical to one device, ac
 node tests/plan.test.mjs       # 29 — DP against an independent greedy optimum over 400
                                #      random rooms; Held–Karp against brute force over 120;
                                #      "optimal is never beaten" over 1,483 generated rooms
-node tests/recovery.test.mjs   # 12 — the answer is byte-identical after a device leaves
+node tests/recovery.test.mjs   # 13 — the answer is byte-identical after a device leaves
 ```
 
 Where an exact algorithm exists, it is checked against an independent brute force.

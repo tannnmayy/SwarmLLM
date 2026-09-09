@@ -3,9 +3,10 @@
 ## What is imported
 
 `engine/upstream/` is a WebGPU inference engine imported from SwarmLLM, pinned to a
-single commit and used **unmodified**. Keeping it byte-identical is deliberate: it
-means upstream fixes can be re-imported by re-running the copy, and it keeps the
-boundary between imported code and our own unambiguous.
+single commit and **functionally unmodified**: the only change is a three-line
+attribution header prepended to each file. Keeping it that way is deliberate --
+upstream fixes re-import by re-running the copy, and the boundary between imported
+code and our own stays unambiguous.
 
 | Pinned commit | `1c9763fcd7eb9c42865cd5937dceba678fe9d9a5` |
 |---|---|
@@ -23,7 +24,8 @@ boundary between imported code and our own unambiguous.
 | `wgsl/base.js` · `wgsl/coop.js` · `wgsl/gemm.js` | compute kernels |
 
 The hybrid Gated-DeltaNet path (`qwen35.js`, `wgsl/qwen35.js`, ~1,570 lines) is
-**not** imported. It is only needed for Qwen 3.8 27B, which is out of scope.
+**not** imported. It is only needed for Qwen 3.8 27B, which is **deferred to the next
+engine phase** rather than abandoned -- it remains the project's stated end goal.
 
 ## Why this was worth importing
 

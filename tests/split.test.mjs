@@ -33,19 +33,19 @@ console.log("\nwhole model (1 device)");
 const whole = await CpuEngine.load(DIR, { layerRange: [0, 30], hasEmbed: true, hasHead: true });
 console.log(`  loaded ${(whole.bytesLoaded / 2 ** 20).toFixed(1)} MB, layers 0-29`);
 
-function runWhole() {
+async function runWhole() {
   whole.reset();
   let pos = 0, logits = null;
-  for (const id of ids) logits = whole.headFromHidden(whole.embedRun(id, pos++));
+  for (const id of ids) logits = await whole.headFromHidden(await whole.embedRun(id, pos++));
   const out = [];
   for (let n = 0; n < NEW; n++) {
     const next = argmax(logits);
     out.push(next);
-    logits = whole.headFromHidden(whole.embedRun(next, pos++));
+    logits = await whole.headFromHidden(await whole.embedRun(next, pos++));
   }
   return { out, logits };
 }
-const ref = runWhole();
+const ref = await runWhole();
 console.log(`  -> ${JSON.stringify(prompt + tok.decode(ref.out))}`);
 
 // ---------------------------------------------------------------- split
@@ -71,20 +71,20 @@ async function runSplit(cuts) {
   const enc = chooseEncoding(whole.cfg.hiddenSize);
   const overWire = (x) => unpackWire(packWire(x, enc), enc);
 
-  const step = (tokenId, pos) => {
+  const step = async (tokenId, pos) => {
     // host embeds and runs its own range, then the hidden state walks the chain
-    let x = slices[0].embedRun(tokenId, pos);
-    for (let i = 1; i < slices.length; i++) x = slices[i].runHidden(overWire(x), pos);
-    return slices[0].headFromHidden(overWire(x));   // and comes back to the host
+    let x = await slices[0].embedRun(tokenId, pos);
+    for (let i = 1; i < slices.length; i++) x = await slices[i].runHidden(overWire(x), pos);
+    return await slices[0].headFromHidden(overWire(x));   // and comes back to the host
   };
 
   let pos = 0, logits = null;
-  for (const id of ids) logits = step(id, pos++);
+  for (const id of ids) logits = await step(id, pos++);
   const out = [];
   for (let n = 0; n < NEW; n++) {
     const next = argmax(logits);
     out.push(next);
-    logits = step(next, pos++);
+    logits = await step(next, pos++);
   }
   return { out, logits, ranges, slices };
 }

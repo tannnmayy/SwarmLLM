@@ -285,7 +285,11 @@ export class CpuEngine {
 
   // --- the four calls ------------------------------------------------------
 
-  embedRun(tokenId, pos) {
+  // These three are async even though this engine computes synchronously. GPU work
+  // genuinely is asynchronous -- a dispatch is submitted and a readback awaited -- so
+  // the contract has to be async for both engines to be interchangeable. Paying it
+  // here costs a microtask; not paying it means every caller has two code paths.
+  async embedRun(tokenId, pos) {
     if (!this.embed) throw new Error("this slice has no embedding table");
     const D = this.cfg.hiddenSize;
     this.x.set(this.embed.subarray(tokenId * D, tokenId * D + D));
@@ -293,13 +297,13 @@ export class CpuEngine {
     return this.x.slice();
   }
 
-  runHidden(xIn, pos) {
+  async runHidden(xIn, pos) {
     this.x.set(xIn);
     this._layers(pos);
     return this.x.slice();
   }
 
-  headFromHidden(xIn) {
+  async headFromHidden(xIn) {
     if (!this.lmHead) throw new Error("this slice has no LM head");
     const C = this.cfg;
     this._rms(xIn, this.finalNorm, this.xn);

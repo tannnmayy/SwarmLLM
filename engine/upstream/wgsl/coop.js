@@ -1,6 +1,6 @@
 // Imported from SwarmLLM — https://github.com/Nehanth/swarmllm
 // Copyright (c) 2026 Nehanth Narendrula. MIT License; see THIRD_PARTY_NOTICES.md.
-// Upstream commit 1c9763fcd7eb9c42865cd5937dceba678fe9d9a5. Unmodified.
+// Upstream commit 1c9763fcd7eb9c42865cd5937dceba678fe9d9a5. Functionally unmodified; this header is the only addition.
 
 // Generated WGSL: cooperative GEMV, batched/twin variants, fused gate/up, accumulate variants.
 // See docs/kernels.md for the rules these kernels follow.

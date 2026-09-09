@@ -70,14 +70,14 @@ class Swarm {
     return s;
   }
 
-  step(tokenId, pos) {
-    let x = this.slices[0].embedRun(tokenId, pos);
-    for (let i = 1; i < this.slices.length; i++) x = this.slices[i].runHidden(overWire(x), pos);
-    return this.slices[0].headFromHidden(overWire(x));
+  async step(tokenId, pos) {
+    let x = await this.slices[0].embedRun(tokenId, pos);
+    for (let i = 1; i < this.slices.length; i++) x = await this.slices[i].runHidden(overWire(x), pos);
+    return await this.slices[0].headFromHidden(overWire(x));
   }
 
-  feed(tokenId) {
-    const logits = this.step(tokenId, this.pos);
+  async feed(tokenId) {
+    const logits = await this.step(tokenId, this.pos);
     this.history.push(tokenId);
     this.pos++;
     return logits;
@@ -85,13 +85,13 @@ class Swarm {
 
   // Reset every cache and re-run the conversation so far. The new holder of a moved
   // range has an empty KV cache, and this is the only thing that fills it.
-  replay() {
+  async replay() {
     for (const e of this.slices) e.reset();
     const hist = this.history.slice();
     this.history = [];
     this.pos = 0;
     let logits = null;
-    for (const id of hist) logits = this.feed(id);
+    for (const id of hist) logits = await this.feed(id);
     return logits;
   }
 }
@@ -101,14 +101,22 @@ console.log("\nuninterrupted reference (3 devices, nothing fails)");
 const refRanges = [[0, 10], [10, 20], [20, 30]];
 const ref = await Swarm.deal(refRanges);
 let logits = null;
-for (const id of ids) logits = ref.feed(id);
+for (const id of ids) logits = await ref.feed(id);
 const refOut = [];
 for (let n = 0; n < TOTAL; n++) {
   const next = argmax(logits);
   refOut.push(next);
-  logits = ref.feed(next);
+  logits = await ref.feed(next);
 }
 console.log(`  -> ${JSON.stringify(PROMPT + tok.decode(refOut))}`);
+
+// Comparing two runs against each other is blind to a fault that breaks both the same
+// way -- an engine returning Promises instead of tensors produced <|endoftext|> forever
+// and still "passed" 12/12. Assert the reference is real generation before trusting any
+// comparison against it.
+ok("the reference run generates real text, not one token repeated",
+   new Set(refOut).size > 2 && !refOut.includes(spec.eos ?? -1),
+   `got ${JSON.stringify(tok.decode(refOut))}`);
 
 // ---------------------------------------------------------------- recovery
 async function runWithFailure(killIndex, label) {
@@ -121,12 +129,12 @@ async function runWithFailure(killIndex, label) {
   const swarm = await Swarm.deal(refRanges);
 
   let lg = null;
-  for (const id of ids) lg = swarm.feed(id);
+  for (const id of ids) lg = await swarm.feed(id);
   const out = [];
   for (let n = 0; n < KILL_AT; n++) {
     const next = argmax(lg);
     out.push(next);
-    lg = swarm.feed(next);
+    lg = await swarm.feed(next);
   }
 
   // ---- a device walks away, mid-answer
@@ -169,7 +177,7 @@ async function runWithFailure(killIndex, label) {
 
   // 3. replay everything said so far, so the new holder's cache is real
   const before = swarm.history.length;
-  lg = swarm.replay();
+  lg = await swarm.replay();
   ok(`${label}: history replayed in full`, swarm.history.length === before && swarm.pos === before,
      `${swarm.history.length} of ${before}`);
 
@@ -177,7 +185,7 @@ async function runWithFailure(killIndex, label) {
   for (let n = KILL_AT; n < TOTAL; n++) {
     const next = argmax(lg);
     out.push(next);
-    lg = swarm.feed(next);
+    lg = await swarm.feed(next);
   }
 
   console.log(`  -> ${JSON.stringify(PROMPT + tok.decode(out))}`);

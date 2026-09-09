@@ -122,7 +122,7 @@ export class Room {
       const now = Date.now();
       if (now - (this._lastProbe || 0) < 5000) return;      // debounce: it fires in bursts
       this._lastProbe = now;
-      if (this.engine) this._calibrate();
+      if (this.engine) await this._calibrate();
       else {
         this.myProfile = await profile(this.spec, { pledgeBytes: this.pledgeBytes });
         this._announce();
@@ -338,7 +338,7 @@ export class Room {
   }
 
   // ---------------------------------------------------------------- data
-  _onFrame(from, f) {
+  async _onFrame(from, f) {
     if (!this.engine) return;
 
     if (f.t === "hidden") {
@@ -346,7 +346,7 @@ export class Room {
       const x = unpackWire(f.data, f.enc);
       if (looksBad(x)) { this._emit("error", "non-finite hidden state from " + from); return; }
       const t0 = performance.now();
-      const out = this.engine.runHidden(x, f.pos);
+      const out = await this.engine.runHidden(x, f.pos);
       const ms = performance.now() - t0;
       this._emit("stage", { pos: f.pos, ms, layers: this.engine.layerCount });
       const data = packWire(out, this.wireEnc);
@@ -382,7 +382,7 @@ export class Room {
     this._emit("loaded", { range, mb: this.engine.bytesLoaded / 2 ** 20, cache: this.engine.cache || null });
     // From here this device is in the chain, so it must not be allowed to doze.
     keepAwake().catch(() => {});
-    this._calibrate();
+    await this._calibrate();
     return this.engine;
   }
 
@@ -394,7 +394,7 @@ export class Room {
   // and a device that measured fast at join can be several times slower by the time it
   // is holding layers. Left uncorrected, that device silently sets the pace for every
   // token in the room.
-  _calibrate() {
+  async _calibrate() {
     if (!this.engine || !this.engine.layerCount) return;
     const n = this.engine.layerCount;
     const x = new Float32Array(this.spec.hidden);
@@ -403,7 +403,7 @@ export class Room {
     const runs = [];
     for (let i = 0; i < 5; i++) {
       const t0 = performance.now();
-      this.engine.runHidden(x, i);
+      await this.engine.runHidden(x, i);
       runs.push((performance.now() - t0) / n);
     }
     this.engine.reset();                       // undo the cache these probes wrote
@@ -590,7 +590,7 @@ export class Room {
 
   // ---------------------------------------------------------------- generate
   async _step(tokenId, pos) {
-    let x = this.engine.embedRun(tokenId, pos);
+    let x = await this.engine.embedRun(tokenId, pos);
     if (this.next) {
       const t0 = performance.now();
       x = await new Promise((resolve) => {
@@ -603,7 +603,7 @@ export class Room {
       if (!x) throw new Error("the chain did not answer in time");
       this.stats.hops.push(performance.now() - t0);
     }
-    return this.engine.headFromHidden(x);
+    return await this.engine.headFromHidden(x);
   }
 
   // Advance the conversation by one token, surviving a device that leaves while the
