@@ -184,9 +184,9 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
 
   // The thing that separates this from every other ideation submission.
   card(s, M, 7.85, 11.5, 2.35, { fill: CARD });
-  label(s, M + 0.5, 8.15, 10.5, "This is not a concept. It runs today.", { size: 15.5, bold: true, color: OK });
+  label(s, M + 0.5, 8.15, 10.5, "This is not a concept. It runs today, and it heals.", { size: 15.5, bold: true, color: OK });
   const facts = [
-    ["70", "tests passing"],
+    ["82", "tests passing"],
     ["4.99", "tok/s, 2 devices"],
     ["bit-exact", "vs 1 device"],
     ["3.57×", "vs exo's method"],
@@ -516,7 +516,7 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
     ["Chain order", "Fixed ring", "Memory ring", "Fixed ring", "Join order", "Solved over RTT"],
     ["Drops a device that hurts", "No", "No", "Yes", "No", "Yes"],
     ["Refuses to split when it should", "No", "No", "Yes", "No", "Yes"],
-    ["Node leaves mid-answer", "Restart", "Repartition", "Not claimed", "Not claimed", "Replay, stream continues"],
+    ["Node leaves mid-answer", "Restart", "Repartition", "Not claimed", "Not claimed", "Heals in 13 s, measured"],
     ["Battery / thermal aware", "No", "No", "No", "Not claimed", "Yes"],
   ];
   const colX = [M, M + 4.5, M + 6.85, M + 9.2, M + 12.05, M + 14.9];
@@ -573,10 +573,10 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
     "06  ·  EVIDENCE, NOT INTENT");
 
   const facts = [
-    ["70", "tests passing", "Wire format, split correctness, and the planner — each claim in this deck has a test named after it.", OK],
+    ["82", "tests passing", "Wire, split correctness, the planner and recovery — each claim in this deck has a test named after it.", OK],
     ["bit-exact", "split vs single device", "A model split across 2, 3 or 5 devices returns logits identical to one machine running it whole.", ACC2],
     ["4.99", "tokens / sec", "SmolLM2 135M across two browsers, 60 tokens, median network lap 63.6 ms.", FG],
-    ["0.94×", "probe vs reality", "Our speed model predicts the engine's real throughput to within six per cent.", FG],
+    ["13.1 s", "to heal, mid-answer", "A device was dropped 58 tokens into an answer. The room recruited a spare, rebuilt the lost state and finished the sentence.", ACC2],
   ];
   facts.forEach(([v, u, c, col], i) => {
     const x = M + i * (CW / 4);
@@ -651,7 +651,7 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
     "Scoped to what four people can finish, and honest about what the architecture will and will not buy.",
     "07  ·  CAN WE FINISH IT");
 
-  label(s, M, 2.45, CW, "36 HOURS, FIVE CHECKPOINTS  —  TWO ALREADY BANKED BEFORE THE CLOCK STARTS", {
+  label(s, M, 2.45, CW, "36 HOURS, FIVE CHECKPOINTS  —  FOUR ALREADY BANKED BEFORE THE CLOCK STARTS", {
     size: 12, bold: true, color: DIM2, cs: 1.6,
   });
 
@@ -659,7 +659,7 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
     ["H0–6", "Transport", "Signalling, WebRTC mesh, wire format. Interfaces frozen.", true],
     ["H6–14", "Two-node split", "Output identical to the single-device reference.", true],
     ["H14–22", "Profiler + partitioner", "Measured placement, chain order, host election.", true],
-    ["H22–30", "Fault recovery", "Kill a node mid-answer; the answer still finishes.", false],
+    ["H22–30", "Fault recovery", "Kill a node mid-answer; the answer still finishes.", true],
     ["H30–36", "Dashboard + rehearsal", "Topology view, benchmark panel, recorded backup.", false],
   ];
   const cw2 = CW / 5;
@@ -679,8 +679,8 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
   const prog = [
     ["Transport, engine, room", 100],
     ["Scheduler — the contribution", 100],
-    ["Dashboard", 80],
-    ["Fault recovery", 10],
+    ["Dashboard", 85],
+    ["Fault recovery", 100],
     ["WebGPU execution", 0],
   ];
   prog.forEach(([n, pct], i) => {
@@ -700,7 +700,7 @@ function stat(s, x, y, w, value, unit, caption, color = FG) {
     }
     label(s, bx2 + bw2 + 0.2, y + 0.02, 0.9, pct + "%", { size: 11.5, color: DIM, face: MONO, align: "right" });
   });
-  label(s, M + 0.5, 9.6, 7.8, "About 70% of what this deck promises is built and tested. Nine to fifteen hours of work remain, against thirty-six available.", {
+  label(s, M + 0.5, 9.6, 7.8, "About 85% of what this deck promises is built and tested. Two to five hours of work remain, against thirty-six available.", {
     size: 12.3, color: DIM, ls: 15,
   });
 
