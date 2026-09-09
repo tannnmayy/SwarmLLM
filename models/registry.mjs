@@ -80,7 +80,15 @@ export const MODELS = {
     // that headroom while still leaving most of the 512-position window free
     // for the rest of a short conversation.
     maxTokensDefault: 320,
-    wireDtype: "f16",
+    // Derived, not chosen: room.js sets its wire encoding from
+    // chooseEncoding(spec.hidden), never from this field. At hidden=1024 a f32
+    // hidden state still fits in one SCTP slice, so this model rides the wire
+    // LOSSLESSLY — which is the real reason its split output is token-identical
+    // to its solo output (see the Phase 3 golden report). Every wider model
+    // (hidden >= 1536, i.e. 1.7B and up) falls to lossy f16, where that
+    // equality becomes an empirical question rather than a guarantee. This
+    // field read "f16" until 2026-09-10 and was simply wrong.
+    wireDtype: "f32",
     // Recorded from the real fetch, not guessed: HTTP response headers off
     // huggingface.co on 2026-09-09 (X-Repo-Commit, X-Linked-Size, X-Linked-ETag),
     // then independently confirmed by hashing the downloaded file — the local
@@ -103,12 +111,15 @@ export const MODELS = {
   "qwen3-1.7b": {
     id: "qwen3-1.7b",
     label: "Qwen3 1.7B · Q8_0",
-    status: STATUS.PLANNED,
+    status: STATUS.EXPERIMENTAL,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    modelUrl: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
-    configUrl: "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/config.json",
-    tokenizerUrl: "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/tokenizer.json",
+    // Local mirror, same reasoning as 0.6B above: a room full of devices should
+    // pull 1.8 GB off the host on the LAN, not off a CDN one device at a time.
+    modelUrl: "/models/qwen3-1.7b/Qwen3-1.7B-Q8_0.gguf",
+    configUrl: "/models/qwen3-1.7b/config.json",
+    tokenizerUrl: "/models/qwen3-1.7b/tokenizer.json",
+    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
     expectedFormat: "Q8_0",
     maxSeqDefault: 512,
     // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
@@ -120,17 +131,23 @@ export const MODELS = {
     // that headroom while still leaving most of the 512-position window free
     // for the rest of a short conversation.
     maxTokensDefault: 320,
+    // Derived from chooseEncoding(2048), not chosen here. Unlike 0.6B, this model
+    // is wide enough that an f32 hidden state would cost a second SCTP slice per
+    // hop, so it rides the wire as LOSSY f16 -- which means split-vs-solo output
+    // equality is an empirical result for this model, not a guarantee the way it
+    // is at 0.6B. See the Phase F report.
     wireDtype: "f16",
-    sourceRevision: "not yet fetched in this build — record exact byte length/SHA-256 on first successful load",
-    minRoomEnvelopeBytes: Math.round(2.0 * GB),
+    // Recorded from the real fetch on 2026-09-10, then independently confirmed by
+    // hashing the downloaded file: the local SHA-256 matches HF's X-Linked-ETag
+    // exactly, so the mirror under models/qwen3-1.7b/ is byte-identical to the
+    // published artifact.
+    sourceRevision: "huggingface.co/Qwen/Qwen3-1.7B-GGUF @ 90862c4b9d2787eaed51d12237eafdfe7c5f6077, " +
+      "1834426016 bytes, sha256:061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    minRoomEnvelopeBytes: Math.round(2.1 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
-    why: "Same dense code path as 0.6B; the first real multi-device capacity demonstration.",
-    // 0.6B reached Verified on 2026-09-10 (see its own `why` field and
-    // IMPLEMENTATION_PLAN.md Phase B), so the original blocker text here is no
-    // longer true. Left at PLANNED anyway, on purpose: promoting this requires a
-    // new ~2 GB download and its own full verification pass (Phase F) -- a
-    // deliberately separate effort, not something to start as a side effect of
-    // closing Phase B.
+    why: "Same dense code path as 0.6B, twice as wide (hidden 2048, 28 layers). The first " +
+         "rung where one mid-range GPU cannot comfortably hold the whole model, so the " +
+         "capacity-through-more-devices claim is doing real work rather than being optional.",
     blockedOn: "Qwen3 0.6B is Verified; this rung has not been started yet — it needs its own " +
       "download, GGUF probe, and live gate (Phase F of the blueprint promotes one rung at a time).",
   },
