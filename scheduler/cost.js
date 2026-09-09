@@ -82,6 +82,9 @@ export function memoryFor(spec, layerCount, isHost) {
 }
 
 // How many layers this device could hold, as host or as a worker.
+// Assumes every layer costs the same bytes. True for dense models, false for a hybrid
+// one whose attention blocks carry a KV cache that its recurrent blocks do not. See the
+// note above `allocate()` in plan.js for the full list of what hybrid support needs.
 export function layerCap(spec, device, isHost) {
   const free = device.budgetBytes - (isHost ? spec.embedBytes : 0) - spec.scratchBytes;
   if (free <= 0) return 0;

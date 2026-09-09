@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Swarm · GPU engine self-test</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0c10; --card:#15161c; --card2:#1c1f29; --line:#25272f;
+          --fg:#e9eaf0; --dim:#868ba0; --dim2:#666b7d;
+          --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#3b5bff; --acc2:#7c5cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); padding:18px; padding-bottom:48px;
+         font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         max-width:820px; margin-inline:auto; }
+  h1 { font-size:19px; margin:0 0 3px; letter-spacing:-.02em; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:15px 17px; margin-bottom:11px; }
+  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim2);
+             margin:0 0 11px; font-weight:650; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:4px 0; font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); flex:0 0 auto; } .row .v { text-align:right; word-break:break-word; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim2)}
+  button { background:var(--acc); color:#fff; border:0; border-radius:11px; padding:13px 18px;
+           font:inherit; font-weight:650; cursor:pointer; width:100%; margin-bottom:10px; }
+  button.ghost { background:var(--card2); border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.45; cursor:default; }
+  #verdict { display:none; font-size:16px; font-weight:650; padding:14px 16px; border-radius:12px; margin-bottom:12px; }
+  pre { background:#08090d; border:1px solid var(--line); border-radius:10px; padding:11px 13px;
+        overflow-x:auto; font:11.5px/1.6 ui-monospace,Menlo,monospace; color:var(--dim); margin:0; }
+  textarea { width:100%; height:150px; background:#08090d; color:var(--dim); border:1px solid var(--line);
+             border-radius:10px; padding:10px; font:11px/1.5 ui-monospace,Menlo,monospace; }
+</style>
+</head>
+<body>
+<h1>GPU engine self-test</h1>
+<div class="sub">
+  Runs the imported WebGPU engine's own numerical gates on this machine, against CPU
+  reference math. Nothing is downloaded — the tests build tiny synthetic models in memory.
+</div>
+
+<button id="go">Run the self-test</button>
+<div id="verdict"></div>
+<div id="out"></div>
+<button class="ghost" id="copy">Copy results</button>
+<textarea id="blob" readonly placeholder="Results appear here."></textarea>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const R = { t: new Date().toISOString(), ua: navigator.userAgent };
+const cards = new Map();
+
+function card(title) {
+  let c = cards.get(title);
+  if (!c) {
+    c = document.createElement("div");
+    c.className = "card";
+    const h = document.createElement("h2"); h.textContent = title;
+    c.appendChild(h); $("out").appendChild(c); cards.set(title, c);
+  }
+  return c;
+}
+function row(title, k, v, cls) {
+  const d = document.createElement("div"); d.className = "row";
+  const ks = document.createElement("span"); ks.className = "k"; ks.textContent = k;
+  const vs = document.createElement("span"); vs.className = "v " + (cls || ""); vs.textContent = String(v);
+  d.append(ks, vs); card(title).appendChild(d);
+  return vs;
+}
+function pre(title, text) {
+  const p = document.createElement("pre"); p.textContent = text; card(title).appendChild(p);
+}
+const gb = (b) => (b / 2 ** 30).toFixed(2) + " GB";
+
+async function run() {
+  const btn = $("go");
+  btn.disabled = true; btn.textContent = "running…";
+  $("out").innerHTML = ""; cards.clear();
+  $("verdict").style.display = "none";
+
+  // ---------------------------------------------------------------- device
+  if (!navigator.gpu) {
+    R.webgpu = false;
+    row("Device", "WebGPU", "NOT AVAILABLE in this browser", "bad");
+    return finish("This browser has no WebGPU. Chrome or Edge on desktop is the tested path.");
+  }
+  let adapter = null;
+  try { adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }); }
+  catch (e) { R.adapterError = String(e); }
+  if (!adapter) {
+    R.webgpu = false;
+    row("Device", "adapter", "navigator.gpu exists but no adapter was returned", "bad");
+    return finish("No GPU adapter. On a desktop this usually means WebGPU is disabled or the GPU is blocklisted.");
+  }
+
+  R.webgpu = true;
+  let info = {};
+  try { info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {}); } catch {}
+  R.gpu = { vendor: info.vendor || "?", architecture: info.architecture || "?", device: info.device || "" };
+  R.f16 = adapter.features.has("shader-f16");
+  R.limits = {
+    maxBufferSize: adapter.limits.maxBufferSize,
+    maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    maxComputeInvocationsPerWorkgroup: adapter.limits.maxComputeInvocationsPerWorkgroup,
+  };
+  row("Device", "adapter", `${R.gpu.vendor} ${R.gpu.architecture} ${R.gpu.device}`.trim() || "(masked)", "ok");
+  row("Device", "shader-f16", R.f16 ? "yes" : "no", R.f16 ? "ok" : "warn");
+  row("Device", "maxBufferSize", gb(R.limits.maxBufferSize));
+  row("Device", "maxStorageBinding", gb(R.limits.maxStorageBufferBindingSize));
+
+  const device = await adapter.requestDevice({
+    requiredFeatures: R.f16 ? ["shader-f16"] : [],
+    requiredLimits: {
+      maxBufferSize: Math.min(adapter.limits.maxBufferSize, 512 * 2 ** 20),
+      maxStorageBufferBindingSize: Math.min(adapter.limits.maxStorageBufferBindingSize, 512 * 2 ** 20),
+    },
+  });
+  device.addEventListener?.("uncapturederror", (e) => { R.uncaptured = String(e.error); });
+
+  // ---------------------------------------------------------------- the gates
+  const { gpuSelfTest, kernelMicroTests } = await import("./engine/upstream/selftest.js");
+
+  // Per-kernel first: it names the failing kernel, where the end-to-end test only
+  // says the logits are wrong. Cheaper to read when something is broken.
+  row("Kernels", "status", "running…", "dim");
+  let micro;
+  const t1 = performance.now();
+  try { micro = await kernelMicroTests(device); }
+  catch (e) { micro = { ok: false, firstFail: String(e), detail: "" }; }
+  R.microMs = Math.round(performance.now() - t1);
+  R.micro = micro;
+  cards.get("Kernels").querySelectorAll(".row").forEach((r) => {
+    if (r.children[0].textContent === "status") {
+      r.children[1].textContent = micro.ok ? `all kernels match CPU math (${R.microMs} ms)` : "MISMATCH";
+      r.children[1].className = "v " + (micro.ok ? "ok" : "bad");
+    }
+  });
+  if (micro.firstFail) row("Kernels", "first failure", micro.firstFail, "bad");
+  if (micro.detail) pre("Kernels", micro.detail.split(" · ").join("\n"));
+
+  // End-to-end: a tiny synthetic model run through the real engine at f32, q8 and q4,
+  // each compared against the same CPU forward pass.
+  row("End to end", "status", "running…", "dim");
+  let self;
+  const t2 = performance.now();
+  try { self = await gpuSelfTest(device); }
+  catch (e) { self = { ok: false, error: String(e) }; }
+  R.selfMs = Math.round(performance.now() - t2);
+  R.self = self;
+  cards.get("End to end").querySelectorAll(".row").forEach((r) => {
+    if (r.children[0].textContent === "status") {
+      r.children[1].textContent = self.ok ? `matches CPU reference (${R.selfMs} ms)` : "MISMATCH";
+      r.children[1].className = "v " + (self.ok ? "ok" : "bad");
+    }
+  });
+  for (const [k, v] of Object.entries(self)) {
+    if (k === "ok" || k === "detail") continue;
+    row("End to end", k, typeof v === "number" ? v.toExponential(2) : String(v),
+        v === true || v === "ok" ? "ok" : v === false ? "bad" : "");
+  }
+  if (self.detail) pre("End to end", String(self.detail));
+
+  device.destroy?.();
+  const allOk = micro.ok && self.ok;
+  R.verdict = allOk ? "PASS" : "FAIL";
+  finish(allOk
+    ? "The imported GPU engine computes correctly on this machine. Safe to build the adapter on."
+    : "A numerical gate failed. Do not build on this until it is understood — a wrong kernel produces plausible text, not an error.");
+}
+
+function finish(msg) {
+  const v = $("verdict");
+  v.style.display = "block";
+  const good = R.verdict === "PASS";
+  v.textContent = (R.verdict || "CANNOT RUN") + " — " + msg;
+  v.style.background = good ? "#123a22" : "#3a1614";
+  v.style.color = good ? "var(--ok)" : "var(--bad)";
+  $("blob").value = JSON.stringify(R, null, 1);
+  $("go").disabled = false;
+  $("go").textContent = "Run again";
+}
+
+$("go").onclick = () => run().catch((e) => {
+  R.fatal = String(e);
+  row("Error", "threw", String(e), "bad");
+  finish("The test threw before finishing.");
+});
+$("copy").onclick = async () => {
+  const t = $("blob"); t.select();
+  try { await navigator.clipboard.writeText(t.value); $("copy").textContent = "Copied — send it back"; }
+  catch { document.execCommand("copy"); $("copy").textContent = "Copied"; }
+  setTimeout(() => ($("copy").textContent = "Copy results"), 2500);
+};
+</script>
+</body>
+</html>

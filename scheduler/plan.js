@@ -47,6 +47,20 @@ const EXACT_LIMIT = 12;
 // `weights` lets a model charge different costs for different layers (a hybrid model
 // with periodic full-attention blocks, say). For a uniform model every weight is 1
 // and the result is provably order-independent -- which the tests assert.
+//
+// NOT WIRED UP. No production caller supplies `weights`: planOptimal calls
+// `allocate(spec, chain, spec.layers)` with it defaulted to null, nothing computes
+// per-layer costs, and `layerCap()` still divides a memory budget by one uniform
+// `layerBytes`. This parameter is groundwork, not hybrid support.
+//
+// Supporting a hybrid model (Qwen 3.8's Gated-DeltaNet blocks interleaved with
+// full-attention ones) needs four things, and this is one:
+//   1. a per-layer cost source -- the model spec must describe each layer's type
+//   2. the profiler measuring each type, not one `msPerLayer` per device
+//   3. `layerCap`/`memoryFor` taking per-layer bytes instead of a single figure
+//   4. planOptimal threading the resulting weights through to here
+// Do not read "the DP accepts weights" as "the scheduler handles hybrid models".
+
 // Tie-break weight. With a linear objective, equally fast devices make [1,1,28] and
 // [10,10,10] cost exactly the same, and a plain DP will happily return the first.
 // They are not equally good: the lopsided one puts 28 layers of memory on one device
