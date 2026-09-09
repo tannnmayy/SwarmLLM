@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/wire.test.mjs && node tests/split.test.mjs && node tests/plan.test.mjs && node tests/recovery.test.mjs",
+    "test": "node tests/wire.test.mjs && node tests/split.test.mjs && node tests/plan.test.mjs && node tests/recovery.test.mjs && node tests/qr.test.mjs && node tests/markdown.test.mjs",
     "test:wire": "node tests/wire.test.mjs",
     "test:split": "node tests/split.test.mjs",
     "test:plan": "node tests/plan.test.mjs",
@@ -16,7 +16,9 @@
     "calibrate": "node tools/calibrate.mjs",
     "scenario": "node tools/scenario.mjs",
     "reference": "node tools/reference.mjs",
-    "deck": "node deck/build.mjs AI-Swarm-Hack-Summit-7.0.pptx"
+    "deck": "node deck/build.mjs AI-Swarm-Hack-Summit-7.0.pptx",
+    "test:qr": "node tests/qr.test.mjs && python tools/qr-verify.py",
+    "test:markdown": "node tests/markdown.test.mjs"
   },
   "dependencies": {
     "pptxgenjs": "^4.0.1",

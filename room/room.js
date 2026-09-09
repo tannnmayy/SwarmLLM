@@ -188,6 +188,34 @@ export class Room {
     return rttLookup(m, { fallback });
   }
 
+  // Can this room hold the model yet, and if not, how far short is it?
+  //
+  // "No feasible plan" is a true answer and a useless one. A person needs to know
+  // whether to lend more of their own device or fetch another one, so this returns
+  // the shortfall in bytes as well as the verdict.
+  capacity() {
+    if (!this.spec || !this.myProfile) return null;
+    const devices = this._devices();
+    const have = devices.reduce((s, d) => s + d.budgetBytes, 0);
+    // What the model costs to hold: every layer, plus the embedding table that the
+    // host carries on top of its own share.
+    const need = this.spec.layers * (this.spec.layerBytes + this.spec.kvBytesPerLayer)
+               + this.spec.embedBytes + this.spec.scratchBytes;
+    // Feasibility is the planner's to decide, not arithmetic's: it knows the host
+    // carries the embedding table and that each device has its own ceiling.
+    let plan = null;
+    try { plan = solvePlan(this.spec, devices, this._rtt(), { strategy: this.strategy }); } catch {}
+    return {
+      needBytes: need,
+      haveBytes: have,
+      shortBytes: Math.max(0, need - have),
+      ready: !!plan,
+      devices: devices.length,
+      usable: plan ? plan.chain.length : 0,
+      frac: Math.min(1, have / need),
+    };
+  }
+
   // What every strategy would do with this room, right now. The benchmark table.
   compare() {
     if (!this.spec || !this.myProfile) return null;

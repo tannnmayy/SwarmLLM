@@ -5,3 +5,6 @@ models/
 
 # build artefacts
 *.pptx
+
+tests/.qr/
+mine.json
