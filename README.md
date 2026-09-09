@@ -1,122 +1,412 @@
-# AI Swarm
+<h1 align="center">AI Swarm</h1>
 
-**Many devices, one model — and it keeps running even if one of them walks away.**
+<p align="center"><b>Many devices, one model — and it keeps running even if one of them walks away.</b></p>
 
-Team SE7EN · AI & Automation track
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#the-scheduler">The scheduler</a> ·
+  <a href="#what-we-found">What we found</a> ·
+  <a href="CHECKLIST.md">Checklist</a> ·
+  <a href="NOTICE.md">Prior art</a>
+</p>
+
+<p align="center">
+  <img alt="tests" src="https://img.shields.io/badge/tests-82%20passing-3ddc84">
+  <img alt="runtime" src="https://img.shields.io/badge/runs%20on-WebRTC%20%2B%20any%20browser-3b5bff">
+  <img alt="install" src="https://img.shields.io/badge/install-none-7c5cff">
+  <img alt="licence" src="https://img.shields.io/badge/licence-MIT-16171c">
+</p>
+
+---
 
 One large language model, cut into contiguous slices, one slice per device. Open a
 link in a browser tab and your phone or laptop becomes one stage of a model far
 bigger than it could ever hold. Tokens pass between devices peer-to-peer over
-WebRTC; the answer appears on every screen.
+WebRTC. The answer appears on every screen.
 
-## What we are actually building
+**Team SE7EN** · Hack Summit 7.0 · AI & Automation track
 
-Browser mesh inference already exists — see [NOTICE.md](NOTICE.md), which names our
-prior art plainly. **We are building the scheduler that sits on top of it.**
+## What this actually is
+
+Browser-based mesh inference already exists — [NOTICE.md](NOTICE.md) names our prior
+art plainly, and we did not fork any of it. **What we are building is the scheduler
+that sits on top of it.**
 
 Existing swarms deal layers in proportion to the memory a device *pledges*, in
-whatever order the devices happened to join. Neither accounts for how fast a device
-actually computes or how far it sits from its neighbours, so one slow phone or one
-distant peer sets the pace for every token. We measure both and solve the placement
-exactly.
+whatever order the devices happened to join. Neither number says how fast a device
+actually computes, or how far it sits from its neighbours — so one slow phone, or one
+distant peer, sets the pace for every token the room produces.
 
-| | Ours |
-|---|---|
-| Layer placement | measured compute + link cost, solved by dynamic programming |
-| Chain order | minimises total lap latency over the RTT matrix |
-| Re-plans while running | yes |
-| Device leaves mid-answer | re-plan, replay, the stream continues |
-| Install | none — it is a web page |
+We measure both, and solve the placement exactly.
+
+|  | exo | prima.cpp | SwarmLLM | **AI Swarm** |
+|---|---|---|---|---|
+| Install | Python per node | Native binary | None | **None** |
+| Layers placed by | pledged memory | measured, ILP solver | pledged memory | **measured cost, solved exactly** |
+| Chain order | memory ring | fixed ring | join order | **solved over measured RTT** |
+| Drops a device that hurts | no | yes | no | **yes** |
+| Refuses to split when it should | no | yes | no | **yes** |
+| Node leaves mid-answer | repartition | not claimed | not claimed | **heals in 13 s, measured** |
 
 ## Status
 
+Everything ticked is backed by a test in this repository or a recorded run, not by
+"it looked like it worked". Full detail in [CHECKLIST.md](CHECKLIST.md).
+
 | Stage | State |
 |---|---|
-| Device probe (WebGPU, memory, bandwidth, NAT) | working |
-| HTTPS + signaling dev server | working |
-| Wire format: adaptive f32/f16, SCTP-sized slicing | working · 30/30 tests |
+| Device probe — WebGPU, memory, bandwidth, NAT type | working |
+| HTTPS + signalling dev server | working |
+| Wire format — adaptive f32/f16, SCTP-sized slicing | working · **30/30 tests** |
 | WebRTC mesh, direct peer links | working · bit-exact tensor bounce |
-| Inference engine, sliceable | working · SmolLM2 135M |
-| Split output identical to one device | working · 11/11, wire codec in the loop |
-| End-to-end swarm over WebRTC | working · answers stream to every screen |
-| Profiler + DP partitioner + chain order + host election | working · 29/29 tests |
-| Fault recovery (device leaves mid-answer) | working · 12/12 tests · verified live |
-| WebGPU engine | next |
+| Sliceable inference engine | working · SmolLM2 135M |
+| Split output identical to a single device | working · **11/11 tests** |
+| End-to-end swarm over WebRTC | working · answer mirrored to every screen |
+| Profiler + placement solver + chain order + host election | working · **29/29 tests** |
+| Fault recovery — a device leaves mid-answer | working · **12/12 tests** · verified live |
+| Weight caching | working · second join downloads nothing |
+| ChatML prompting + multi-turn + honest context limit | working |
+| WebGPU engine | not started — CPU only, ~5 tok/s |
 
-Measured across two browsers on one machine: 60 tokens, layers 0-12 and 13-29,
-answer byte-identical to the single-device CPU reference.
+**Measured, on two browsers:** 60 tokens at **4.99 tok/s**, median network lap
+**63.6 ms**, answer byte-identical to the single-device reference.
 
-## Running it
+**Measured, recovery:** a worker dropped **58 tokens into an answer**. The room
+re-planned, recruited a device it had earlier stood down, replayed 58 tokens and
+**recovered in 13.1 s** — finishing the sentence it was in the middle of.
+
+## Quick start
+
+Requires Node 20+. No Python, no CUDA, no build step.
 
 ```bash
 npm install
-npm run cert     # regenerate the TLS cert for this machine's LAN IP -- RUN THIS AT THE VENUE
+npm run model      # downloads SmolLM2-135M and reshapes it into per-layer shards (~257 MB)
+npm run cert       # TLS cert for THIS machine's LAN IP — re-run whenever the IP changes
 npm run serve
 ```
 
 Then:
 
-- **this machine** — `http://localhost:8442/probe.html` (localhost is already a
-  secure context, so no cert warning)
-- **other devices, same Wi-Fi** — `https://<lan-ip>:8443/probe.html`, and accept the
-  self-signed cert once (Android: *Advanced → Proceed*; iOS: *Show Details → visit
-  this website*)
+- **this machine** — <http://localhost:8442/room.html>
+  (`http://localhost` is already a secure context, so no certificate warning)
+- **other devices, same Wi-Fi** — `https://<lan-ip>:8443/room.html`, accepting the
+  self-signed certificate once (Android: *Advanced → Proceed*; iOS: *Show Details →
+  visit this website*)
 
-WebGPU and WebRTC both require a secure context. Plain `http://192.168.x.x` gives
-you neither, and the failure looks exactly like "this phone has no WebGPU" — which
-is why the dev server serves TLS with the LAN IP in the certificate's SAN.
+Open the room on two or more devices with the same code, drag the **pledge** slider
+down so the model no longer fits on one device, and press **Start the swarm**.
+
+> **WebGPU and WebRTC both require a secure context.** Plain `http://192.168.x.x`
+> gives you neither, and the failure looks exactly like *"this phone has no WebGPU"* —
+> which is why the dev server serves TLS with the LAN IP in the certificate's SAN.
+> iOS checks the SAN, not the common name, so `npm run cert` is the first command to
+> run at a new venue.
 
 ### Pages
 
 | Page | What it is for |
 |---|---|
-| `probe.html` | What can this device do? WebGPU adapter, usable GPU memory, effective bandwidth, thermal/battery APIs, NAT type |
+| `room.html` | The room. Join, pledge, plan, generate, watch it heal |
+| `probe.html` | What can this device do? WebGPU adapter, usable memory, effective bandwidth, thermal/battery APIs, NAT type |
 | `mesh-test.html` | Do two devices connect directly, and does a tensor survive the trip bit-exactly? |
 
-### Tests
+## How it works
+
+One device is the **host**. It owns the conversation, the tokenizer, the embedding
+table, the LM head and the sampler. The others are **workers**, each holding a
+contiguous range of transformer layers. Together they form a chain in layer order.
+
+```
+host      tokenize → embed → run my layers ─┐
+                                            ▼
+worker A  layers 0–13 ──► worker B  layers 14–23 ──► worker C  layers 24–29 ──┐
+                                                                              │
+host      final norm → LM head → sample → next token ◄────────────────────────┘
+```
+
+Per token, one hidden state walks the whole chain and comes back. For SmolLM2-135M
+that vector is 576 floats — **2.3 KB on the wire**. That small payload is what makes
+this work over ordinary Wi-Fi, and it is why layer-splitting is the right shape:
+tensor parallelism would need two collective operations *per layer*, which is
+hopeless on anything slower than a PCIe bus.
+
+### The contract between devices
+
+The entire interface a device must implement is four calls:
+
+```js
+embedRun(tokenId, pos)   // host   : embed a token, then run my layers
+runHidden(x, pos)        // worker : run my layers on an incoming hidden state
+headFromHidden(x)        // host   : final norm + LM head → logits
+reset()                  // all    : new conversation, caches back to position 0
+```
+
+Everything else — the placement solver, the recovery path, the dashboard — is built
+on top of those four. The WebGPU engine, when it lands, is a drop-in behind the same
+interface.
+
+### Model sharding
+
+`tools/fetch-model.mjs` downloads the model and reshapes it into **one file per
+layer**, so a device downloads only the layers it was dealt — a plain `GET`, with no
+range-request bookkeeping and no partial-cache edge cases.
+
+```
+embed.bin       54.0 MB   host only
+layer-00.bin     6.75 MB  ×30
+final.bin        1.1 KB
+                256.6 MB  total
+```
+
+A device dealt 8 layers pulls **54 MB**, once. After that it comes from the Cache
+API, byte-length-checked against the manifest.
+
+SmolLM2 ships bf16, which WebGPU cannot read. bf16 → f16 is lossless here, because
+f16 actually has *more* mantissa (10 bits against 7) and only a narrower exponent
+range, which weights sit far inside: **0 of 134.5M values overflowed**, 17 flushed to
+zero.
+
+## The scheduler
+
+This is the contribution, and the only thing we ask to be judged on.
+
+### The cost model
+
+```
+cost = Σ layers × ms/layer          compute at each stage
+     + Σ hops (RTT/2 + bytes/bw)    one hop per link, plus the return to the host
+     + host overhead                embed, final norm, LM head, sampling
+```
+
+subject to a per-device memory bound, layer contiguity, and chain order.
+
+Two things fall out of this that a scheduler built on intuition gets wrong:
+
+- **The LM head is ~8 layers of arithmetic** (49,152 × 576 against 3.54M MACs per
+  layer) and it runs on the host alone. Host election is the single
+  highest-leverage decision in the plan, ahead of any layer cut.
+- **Every extra device costs a hop.** A phone that would hold one layer saves a few
+  milliseconds of a fast device's compute and adds a full round trip. Including it is
+  a net loss, and the solver has to be able to say so.
+
+### The solver
+
+The problem decomposes exactly, which is what lets it run without an ILP dependency:
+
+- The chain is a **cycle** (host → workers → host), and a cycle's cost does not depend
+  on where you start — so the tour is solved once per subset and reused for every host
+  choice within it.
+- With uniform per-layer cost — true of every dense model, including this one —
+  the layer allocation depends only on *which* devices are present, not their order.
+  So ordering and allocation separate, and each is solved exactly.
+
+| Decision | Method | Cost |
+|---|---|---|
+| Which devices | exhaustive subset search | 2ⁿ, n ≤ 12 |
+| What order | Held–Karp | O(2ⁿ·n²) |
+| Which layers | DP over cut points | O(n·L²) |
+| Which host | measured ms/layer, must fit the embedding table | O(n) |
+
+**Solve time: ~0.1 ms** for a room of six. prima.cpp's Halda solves a comparable
+problem with an ILP solver and reports 10–12 ms.
+
+Ties are broken toward balance. With a linear objective `[1,1,28]` and `[10,10,10]`
+cost exactly the same and a plain DP returns the first — but they are not equally
+good, because the lopsided plan puts 28 layers of memory on one device and collapses
+if that device turns out slightly slower than measured.
+
+### Five strategies, one interface
+
+So the comparison in the pitch is a measurement rather than an argument. `memory` is a
+faithful reproduction of exo's documented ring memory-weighted partitioning, given
+the same feasibility repair as everything else — it is the thing to beat, not a
+strawman written to lose.
+
+| Strategy | What it does |
+|---|---|
+| `solo` | everything on the fastest capable device — the honest ceiling |
+| `even` | equal split, join order |
+| `memory` | proportional to pledged memory, biggest first (**exo**) |
+| `compute` | proportional to measured speed, network-blind |
+| `optimal` | subset + chain order + layer cut + host, solved |
 
 ```bash
-node tests/wire.test.mjs
+node tools/scenario.mjs        # what each strategy would do, across six room shapes
 ```
 
-## Layout
+### Profiling
 
-```
-scheduler/    cost.js   the latency and memory model, with its assumptions stated
-              plan.js   five strategies; the optimal one solves subset + order +
-                        layer cut + host election exactly            <- the contribution
-              probe.js  measures ms/layer, detects a throttled tab
-room/         wire.js   adaptive f32/f16 + SCTP-sized framing
-              mesh.js   WebRTC mesh, negotiated channels, RTT gossip
-              room.js   the room: plan, deal, load, generate
-              awake.js  wake lock, so a device in the chain cannot doze
-engine/       cpu.mjs   the sliceable engine: embedRun / runHidden / headFromHidden
-tools/        serve.mjs (HTTPS + signaling) · fetch-model · reference · calibrate ·
-              scenario (when is a swarm worth it?) · tokenizer · make-cert
-tests/        wire · split · plan
-```
+Twice, on purpose:
+
+1. **At join** — a ~300 ms matvec of a layer's shape, converted to MACs/second so one
+   probe serves any model. Validated against the real engine at **0.93–1.00×**
+   across runs (`npm run calibrate`, which fails the build outside ±35%).
+2. **After loading** — the real thing is timed on real layers and the room is told.
+
+The second pass is not redundant. See the throttling finding below.
+
+### Recovery
+
+A device leaving mid-answer is normal behaviour, not an outage.
+
+1. Fail the in-flight lap immediately, rather than waiting out its timeout
+2. Re-plan over the survivors — **including devices the planner had stood down**,
+   which get recruited back when they are suddenly needed
+3. Re-deal the orphaned range. A device whose range did not change **keeps its
+   weights** and clears only its cache
+4. Replay the conversation, so the new holder's KV cache is real rather than empty
+5. Resume from the same position
+
+The property that matters is not "it does not crash" — it is that **the answer is
+unchanged**. A room that survives a failure by quietly producing different text has
+not recovered; it has started a different conversation without saying so. So the gate
+is byte equality with an uninterrupted run, and that is what `tests/recovery.test.mjs`
+asserts.
+
+Replay is idempotent: re-running position *p* with the same token writes the same K
+and V a device already held, so devices that kept their range are unharmed by being
+replayed through.
 
 ## What we found
 
-Three results worth stating before anyone asks:
+Four results worth stating before anyone asks.
 
-- **A swarm buys capacity, not speed.** Single-stream decode is a sum of stages plus
-  hops, so splitting a model over more devices makes one stream slower, never faster.
-  exo measures 49.3 / 44.4 / 39.7 tok/s on 1 / 2 / 3 M4 Pros. The scheduler's job is
-  to know when *not* to split, and to minimise the damage when the model genuinely
-  does not fit.
-- **A hidden browser tab runs about 3x slower.** Byte-identical code measured 0.24
-  GMAC/s in a background tab against 0.75 inline in the same page. A device profiled
-  while hidden reports a speed it will not hold, and one wrong number produces a
-  confidently wrong plan. Hence: a `hidden` flag, a re-measure on visibility, a second
-  calibration against real layers, and a wake lock.
-- **Lossy activations make the answer depend on where the model was cut.** f16 only
-  pays for itself when it removes an SCTP slice, which at these hidden sizes it does
-  not. `room/wire.js` sends f32 when it is free, and the split answer is then
-  bit-identical to the single-device answer.
+### A swarm buys capacity, not speed
 
-`node tools/scenario.mjs` prints the whole picture for a given room.
+Single-stream decode is a **sum** of stages plus hops, not a max. One token is in
+flight at a time and it walks the whole chain, so splitting a model over more devices
+makes a single stream *slower*, never faster.
+
+exo measures **49.3 / 44.4 / 39.7 tok/s** on 1 / 2 / 3 M4 Pros. prima.cpp's 70B win
+(674 ms/token against 10,120 on one machine) comes from escaping memory exhaustion,
+not from parallelism. SwarmLLM's own published benchmark shows **10.8 tok/s** on a
+MacBook alone against **7.7 tok/s** with an iPhone added holding 2 of 64 layers — a
+29% loss for adding a device.
+
+The scheduler's job is therefore to know **when not to split**, and to minimise the
+damage when the model genuinely does not fit. A planner built on the opposite belief
+would happily add that phone.
+
+### A hidden browser tab runs about 3× slower
+
+Byte-identical matvec code measured **0.241 GMAC/s** inside a module at page load and
+**0.746 GMAC/s** inline in the same hidden page. A device profiled while hidden
+reports a speed it will not hold, and one wrong number there produces a confidently
+wrong plan.
+
+Three defences, since no single one is enough:
+
+- the probe reports `hidden` and marks itself unstable rather than lying quietly
+- visibility changes trigger a re-measure (debounced — the event fires in bursts)
+- a second calibration against real layers after loading, which caught **14.0 → 4.4
+  ms/layer** live, and `room/awake.js` takes a Screen Wake Lock so it stops happening
+
+**Every device screen-on, tab in front** is a run-book item, not a hope.
+
+### Lossy activations make the answer depend on where the model was cut
+
+f16 halves the bytes on the wire, but that only buys anything if it removes an SCTP
+slice — a hop's latency is set by send opportunities, not by size. At these hidden
+sizes it does not:
+
+| Model | dim | f16 | f32 | |
+|---|---|---|---|---|
+| SmolLM2 135M | 576 | 1 slice | 1 slice | f32 is free |
+| Qwen3 0.6B | 1024 | 1 slice | 1 slice | f32 is free |
+| Qwen3 1.7B | 2048 | 1 slice | 2 slices | f16 wins |
+
+So `room/wire.js` sends f32 whenever it costs no extra slice, and the split answer is
+then **bit-identical** to the single-device answer. Before this, the same prompt gave
+different text depending on where the room happened to cut the model — which defeats
+the point of a scheduler that re-plans.
+
+### Chrome's SCTP releases about four packets per send opportunity
+
+With a ~12 KB initial congestion window, so any send above roughly 4.6 KB costs an
+*extra round trip on every hop* — around 200 ms per lap on a 100 ms link. Every frame
+is sliced under that threshold. (This one is a measured fact about Chrome, published
+by SwarmLLM; we re-measured it ourselves with `mesh-test.html`.)
+
+## Repository layout
+
+About 5,300 lines of runtime and tests, plus an 840-line deck generator. All of it ours.
+
+```
+scheduler/       the contribution
+  cost.js        latency and memory model, with its assumptions stated out loud
+  plan.js        five strategies; `optimal` solves subset + order + cut + host exactly
+  probe.js       measures ms/layer, detects a throttled tab
+
+room/
+  wire.js        adaptive f32/f16 packing + SCTP-sized framing and reassembly
+  mesh.js        WebRTC mesh, negotiated ctrl/wire channels, RTT gossip
+  room.js        the room: profile, plan, deal, generate, heal
+  awake.js       wake lock, so a device in the chain cannot doze
+
+engine/
+  cpu.mjs        the sliceable engine and the four-call contract; isomorphic
+
+tools/
+  serve.mjs      HTTPS + HTTP dev server, signalling attached at /signal
+  signal.mjs     introductions only — no message type can carry a prompt
+  fetch-model.mjs   download and reshape into per-layer shards
+  tokenizer.mjs  byte-level BPE
+  reference.mjs  CPU golden reference — what the GPU port must match
+  calibrate.mjs  does the probe predict the engine? (gate: within ~35%)
+  scenario.mjs   when is a swarm worth it?
+  make-cert.sh   regenerate the TLS cert for this machine's LAN IP
+
+tests/           wire · split · plan · recovery
+deck/            round 1 pitch deck generator
+```
+
+## Testing
+
+```bash
+npm test                       # all four suites
+node tests/wire.test.mjs       # 30 — f16 normals and subnormals, slice boundaries,
+                               #      out-of-order and duplicate slices, precision choice
+node tests/split.test.mjs      # 11 — split output identical to one device, across
+                               #      2, 3 and 5 devices, with the real wire codec in the loop
+node tests/plan.test.mjs       # 29 — DP against an independent greedy optimum over 400
+                               #      random rooms; Held–Karp against brute force over 120;
+                               #      "optimal is never beaten" over 1,483 generated rooms
+node tests/recovery.test.mjs   # 12 — the answer is byte-identical after a device leaves
+```
+
+Where an exact algorithm exists, it is checked against an independent brute force.
+Where a claim appears in the pitch, there is a test named after the claim.
+
+## Honest limits
+
+- **It will not beat a real GPU.** One machine that fits the model wins outright, and
+  the planner says so and runs solo.
+- **It scales in capacity, not speed.** Six devices run a model none of them could
+  hold — at roughly the speed of the slowest useful subset, not six times anything.
+- **The engine is CPU-only today**, around 5 tok/s. WebGPU is the largest piece of
+  remaining work and would move that by an order of magnitude.
+- **Context is 512 positions.** Small and real. A question with no room to be answered
+  is refused up front rather than cut off mid-sentence.
+- **Losing the host is not recoverable.** The conversation, the tokenizer and the LM
+  head all live there. Reported clearly rather than hung.
+- **Strict NATs are unhandled.** STUN only; no TURN relay yet.
+- **Phones are guests, not workhorses.** They join, hold a few layers, and get dropped
+  when they would slow the room. That is the design, not a bug.
+
+## Prior art
+
+We did not invent browser mesh inference. [SwarmLLM](https://github.com/Nehanth/swarmllm)
+shipped it and is our stated starting point; [exo](https://github.com/exo-explore/exo)
+and [prima.cpp](https://arxiv.org/abs/2504.08791) shaped the placement work, and
+prima.cpp published the device-dropping result first.
+
+**We did not fork any of them.** Every file here was written by our team.
+[NOTICE.md](NOTICE.md) sets out what we learned from whom, and draws the line around
+what is ours.
 
 ## Licence
 
-MIT. See [NOTICE.md](NOTICE.md) for prior art and attribution.
+[MIT](LICENSE). Model weights and tokenizers come from their publishers under their
+own licences and are not redistributed here.
