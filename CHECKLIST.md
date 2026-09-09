@@ -42,7 +42,17 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [x] CPU golden reference for the GPU port to match (`tools/reference.mjs`)
 - [x] **11/11 split tests** — bit-identical logits across 2, 3 and 5 devices,
       with the real wire codec in the loop
-- [ ] **WebGPU engine** *(the big one; ~10–16 h. 5 tok/s → tens)*
+- [x] **WebGPU kernels imported and verified on real hardware** — kernel micro-tests
+      and a synthetic end-to-end forward pass at f32/Q8/Q4, bit-exact against CPU
+      math (`gpu-test.html`, [report](docs/gpu-reports/2026-09-09-phase1-gpu-selftest.json))
+- [x] **GPU engine factory + adapter** (`engine/factory.mjs`, `engine/gpu-adapter.mjs`) —
+      loads a real GGUF over a real HTTP range request; whole-model and split across
+      two engine instances both match an independent CPU reference to 1.1e-7 relative
+      error (`gpu-adapter-test.html`, [report](docs/gpu-reports/2026-09-09-phase2-gpu-adapter-selftest.json)) · **34/34 tests**
+- [ ] **Connect a real Qwen3 0.6B download to the room** — the model ladder registry
+      (`models/registry.mjs`) has the descriptor, but `room.js` does not yet fetch a
+      GGUF, derive a scheduler cost model from it, or offer model selection in the UI.
+      *(this is the actual remaining gap, not "WebGPU" generally)*
 - [ ] Batched prefill *(token-by-token today; ~3–4 h)*
 - [ ] Larger models fetched and tested (Qwen3 0.6B / 1.7B) *(~1–2 h)*
 - [x] Weight caching in the Cache API — byte-length checked against the manifest,
@@ -132,7 +142,7 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 
 - [x] MIT licence and `NOTICE.md` stating prior art and what is ours
 - [x] README with honest status and findings
-- [x] 82 tests across four suites
+- [x] 168 tests across seven suites
 - [ ] CI running the tests on push *(~0.5 h)*
 - [ ] Round 1 pitch deck *(in progress)*
 

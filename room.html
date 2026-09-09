@@ -330,7 +330,7 @@ async function join() {
     show("loadBar", false); show("loadTxt", false);
     show("chatCard", true); show("statCard", true); show("reset", true);
     show("kill", room.isHost && room.chain.length > 0);
-    $("model").textContent = MODELS["smollm2-135m"].label;
+    $("model").textContent = MODELS[room.model].label;
     $("s-dev").textContent = (room.chain?.length || 0) + 1;
     log("swarm online", "ok");
   });

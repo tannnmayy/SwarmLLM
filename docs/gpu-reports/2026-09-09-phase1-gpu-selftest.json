@@ -1,0 +1,31 @@
+{
+ "t": "2026-09-09T16:30:02.622Z",
+ "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.49585.0 Chrome/152.0.7977.76 Safari/537.36 MSIX",
+ "webgpu": true,
+ "gpu": {
+  "vendor": "amd",
+  "architecture": "gcn-5",
+  "device": ""
+ },
+ "f16": true,
+ "limits": {
+  "maxBufferSize": 2147483648,
+  "maxStorageBufferBindingSize": 2147483644,
+  "maxComputeInvocationsPerWorkgroup": 1024
+ },
+ "microMs": 926,
+ "micro": {
+  "ok": true,
+  "firstFail": null,
+  "detail": "rmsnorm:ok · matvec_q8:ok · head_norm:ok · rope:ok · attn_softmax:ok · silu_mul:ok · add_res:ok · full_layer:ok"
+ },
+ "selfMs": 57,
+ "self": {
+  "ok": true,
+  "f32": { "ok": true, "maxDiff": 0, "nan": false, "err": null },
+  "q8": { "ok": true, "maxDiff": 0, "nan": false, "err": null },
+  "q4": { "ok": true, "maxDiff": 0, "nan": false, "err": null },
+  "detail": "f32:ok · q8:ok · q4:ok"
+ },
+ "verdict": "PASS"
+}

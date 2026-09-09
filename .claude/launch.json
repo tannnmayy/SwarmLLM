@@ -6,9 +6,10 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": [
         "run",
-        "dev"
+        "serve"
       ],
-      "port": 3000
+      "port": 8442,
+      "url": "http://localhost:8442"
     }
   ]
 }

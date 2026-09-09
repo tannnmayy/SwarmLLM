@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Swarm · GPU adapter self-test</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0c10; --card:#15161c; --card2:#1c1f29; --line:#25272f;
+          --fg:#e9eaf0; --dim:#868ba0; --dim2:#666b7d;
+          --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#3b5bff; --acc2:#7c5cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); padding:18px; padding-bottom:48px;
+         font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+         max-width:820px; margin-inline:auto; }
+  h1 { font-size:19px; margin:0 0 3px; letter-spacing:-.02em; }
+  .sub { color:var(--dim); font-size:13px; margin-bottom:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:15px 17px; margin-bottom:11px; }
+  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim2);
+             margin:0 0 11px; font-weight:650; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:4px 0; font-variant-numeric:tabular-nums; }
+  .row .k { color:var(--dim); flex:0 0 auto; } .row .v { text-align:right; word-break:break-word; }
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim2)}
+  button { background:var(--acc); color:#fff; border:0; border-radius:11px; padding:13px 18px;
+           font:inherit; font-weight:650; cursor:pointer; width:100%; margin-bottom:10px; }
+  button.ghost { background:var(--card2); border:1px solid var(--line); color:var(--fg); }
+  button:disabled { opacity:.45; cursor:default; }
+  #verdict { display:none; font-size:16px; font-weight:650; padding:14px 16px; border-radius:12px; margin-bottom:12px; }
+  pre { background:#08090d; border:1px solid var(--line); border-radius:10px; padding:11px 13px;
+        overflow-x:auto; font:11.5px/1.6 ui-monospace,Menlo,monospace; color:var(--dim); margin:0; }
+  textarea { width:100%; height:150px; background:#08090d; color:var(--dim); border:1px solid var(--line);
+             border-radius:10px; padding:10px; font:11px/1.5 ui-monospace,Menlo,monospace; }
+</style>
+</head>
+<body>
+<h1>GPU adapter self-test</h1>
+<div class="sub">
+  Loads a real, tiny Q8_0 GGUF file (<code>tests/fixtures/tiny-qwen3-q8.gguf</code>, built by
+  <code>tools/build-test-gguf.mjs</code>) through the actual room-facing path — <code>engine/factory.mjs</code>
+  &rarr; <code>engine/gpu-adapter.mjs</code> &rarr; the imported <code>DenseEngine</code> — over a real HTTP
+  range request, the same way a Qwen3 GGUF would load. Checks the result against an independent CPU
+  reference built from the same file's own dequantized weights, both whole-model and split across two
+  engine instances the way a two-device room would.
+</div>
+
+<button id="go">Run the adapter self-test</button>
+<div id="verdict"></div>
+<div id="out"></div>
+<button class="ghost" id="copy">Copy results</button>
+<textarea id="blob" readonly placeholder="Results appear here."></textarea>
+
+<script type="module">
+import { createEngine } from "./engine/factory.mjs";
+import { acquireDevice, cfgFromGGUFMeta, GpuCapabilityError } from "./engine/gpu-adapter.mjs";
+import { parseGGUFHeader, dequantF32 } from "./engine/upstream/gguf.js";
+
+const $ = (id) => document.getElementById(id);
+const cards = new Map();
+function card(title) {
+  let c = cards.get(title);
+  if (!c) { c = document.createElement("div"); c.className = "card";
+    const h = document.createElement("h2"); h.textContent = title; c.appendChild(h);
+    $("out").appendChild(c); cards.set(title, c); }
+  return c;
+}
+function row(title, k, v, cls) {
+  const d = document.createElement("div"); d.className = "row";
+  const ks = document.createElement("span"); ks.className = "k"; ks.textContent = k;
+  const vs = document.createElement("span"); vs.className = "v " + (cls || ""); vs.textContent = String(v);
+  d.append(ks, vs); card(title).appendChild(d);
+  return vs;
+}
+function pre(title, text) { const p = document.createElement("pre"); p.textContent = text; card(title).appendChild(p); }
+
+function finish(verdict, msg, R) {
+  const v = $("verdict");
+  v.style.display = "block";
+  const good = verdict === "PASS";
+  v.textContent = verdict + " — " + msg;
+  v.style.background = good ? "#123a22" : "#3a1614";
+  v.style.color = good ? "var(--ok)" : "var(--bad)";
+  if (R) { R.verdict = verdict; R.message = msg; $("blob").value = JSON.stringify(R, null, 1); }
+  $("go").disabled = false;
+  $("go").textContent = "Run again";
+}
+
+const FIXTURE_URL = new URL("tests/fixtures/tiny-qwen3-q8.gguf", location.href).href;
+
+// Independent CPU reference: parse + fully dequantize the SAME file's tensors
+// (not the values tools/build-test-gguf.mjs happened to have in memory), then run
+// a plain CPU forward pass. This is deliberately built without going anywhere
+// near engine/gpu-adapter.mjs or engine/upstream/dense.js, so it cannot share a
+// bug with the thing it is checking.
+async function cpuReference(buf, cfg, ids) {
+  const header = parseGGUFHeader(buf, { skipTokenizer: true });
+  const bytesOf = (name) => {
+    const info = header.tensors[name];
+    return { info, bytes: new Uint8Array(buf, info.byteOffset, info.byteLength) };
+  };
+  const get1D = (name) => { const { info, bytes } = bytesOf(name); return dequantF32(info, bytes); };
+  const get2D = (name) => { const { info, bytes } = bytesOf(name); return dequantF32(info, bytes); };
+
+  const { hidden_size: dim, num_attention_heads: nH, num_key_value_heads: nKV, head_dim: hd,
+    intermediate_size: inter, vocab_size: vocab, num_hidden_layers: L, rms_norm_eps: eps, rope_theta: theta } = cfg;
+  const qDim = nH * hd, kvDim = nKV * hd;
+
+  const embed = get2D("token_embd.weight");
+  const finalNorm = get1D("output_norm.weight");
+  const layers = [];
+  for (let i = 0; i < L; i++) {
+    const p = `blk.${i}.`;
+    layers.push({
+      inNorm: get1D(p + "attn_norm.weight"), postNorm: get1D(p + "ffn_norm.weight"),
+      q: get2D(p + "attn_q.weight"), k: get2D(p + "attn_k.weight"), v: get2D(p + "attn_v.weight"),
+      o: get2D(p + "attn_output.weight"),
+      gate: get2D(p + "ffn_gate.weight"), up: get2D(p + "ffn_up.weight"), down: get2D(p + "ffn_down.weight"),
+    });
+  }
+
+  const rms = (x, w) => { let ss = 0; for (const v of x) ss += v * v; const inv = 1 / Math.sqrt(ss / x.length + eps); return x.map((v, i) => v * inv * w[i]); };
+  const mm = (M, x, dO, dI) => { const o = new Float32Array(dO); for (let r = 0; r < dO; r++) { let a = 0; for (let c = 0; c < dI; c++) a += M[r * dI + c] * x[c]; o[r] = a; } return o; };
+  const rope = (v, heads, pos) => { const half = hd / 2; for (let h = 0; h < heads; h++) for (let i = 0; i < half; i++) {
+    const ang = pos * Math.pow(theta, -(2 * i) / hd), c = Math.cos(ang), s = Math.sin(ang);
+    const a = v[h * hd + i], b = v[h * hd + i + half]; v[h * hd + i] = a * c - b * s; v[h * hd + i + half] = b * c + a * s; } };
+
+  const kc = layers.map(() => []), vc = layers.map(() => []);
+  const perStageHidden = []; // hidden state after layer 0, for the split test
+  let logits = null;
+  ids.forEach((id, pos) => {
+    const x = Float32Array.from(embed.subarray(id * dim, (id + 1) * dim));
+    layers.forEach((Wl, li) => {
+      const xn = rms(x, Wl.inNorm);
+      const q = mm(Wl.q, xn, qDim, dim), k = mm(Wl.k, xn, kvDim, dim), v = mm(Wl.v, xn, kvDim, dim);
+      rope(q, nH, pos); rope(k, nKV, pos); kc[li].push(k); vc[li].push(v);
+      const att = new Float32Array(qDim), T = kc[li].length, sc = new Float32Array(T);
+      for (let h = 0; h < nH; h++) {
+        const kvH = Math.floor(h / (nH / nKV));
+        for (let t = 0; t < T; t++) { let a = 0; for (let i = 0; i < hd; i++) a += q[h * hd + i] * kc[li][t][kvH * hd + i]; sc[t] = a / Math.sqrt(hd); }
+        let mx = -Infinity; for (let t = 0; t < T; t++) mx = Math.max(mx, sc[t]);
+        let sum = 0; for (let t = 0; t < T; t++) { sc[t] = Math.exp(sc[t] - mx); sum += sc[t]; }
+        for (let t = 0; t < T; t++) for (let i = 0; i < hd; i++) att[h * hd + i] += (sc[t] / sum) * vc[li][t][kvH * hd + i];
+      }
+      const pr = mm(Wl.o, att, dim, qDim); for (let i = 0; i < dim; i++) x[i] += pr[i];
+      const xn2 = rms(x, Wl.postNorm);
+      const g = mm(Wl.gate, xn2, inter, dim), u = mm(Wl.up, xn2, inter, dim);
+      for (let i = 0; i < inter; i++) g[i] = (g[i] / (1 + Math.exp(-g[i]))) * u[i];
+      const d = mm(Wl.down, g, dim, inter); for (let i = 0; i < dim; i++) x[i] += d[i];
+      if (li === 0) perStageHidden.push(x.slice());
+    });
+    logits = mm(embed, rms(x, finalNorm), vocab, dim);
+  });
+  return { logits, afterLayer0: perStageHidden };
+}
+
+function relDiff(a, b) {
+  let md = 0, scale = 1e-6, nan = false;
+  for (let i = 0; i < a.length; i++) { if (!Number.isFinite(b[i])) nan = true; md = Math.max(md, Math.abs(a[i] - b[i])); scale = Math.max(scale, Math.abs(a[i])); }
+  return { maxDiff: md / scale, nan };
+}
+
+async function run() {
+  const btn = $("go");
+  btn.disabled = true; btn.textContent = "running…";
+  $("out").innerHTML = ""; cards.clear();
+  $("verdict").style.display = "none";
+
+  const R = { t: new Date().toISOString(), ua: navigator.userAgent, fixture: FIXTURE_URL };
+
+  let device, caps;
+  try {
+    ({ device, caps } = await acquireDevice({ requireShaderF16: false }));
+  } catch (e) {
+    row("Device", "acquireDevice", e instanceof GpuCapabilityError ? `[${e.kind}] ${e.message}` : String(e), "bad");
+    R.verdict = "CANNOT RUN"; R.deviceError = String(e.message || e);
+    $("blob").value = JSON.stringify(R, null, 1);
+    return finish("CANNOT RUN", "No usable WebGPU device — see engine/gpu-adapter.mjs:acquireDevice's classified error above.");
+  }
+  row("Device", "adapter", `${caps.vendor} ${caps.architecture}`.trim() || "(masked)", "ok");
+  row("Device", "shader-f16", caps.shaderF16 ? "yes" : "no");
+  R.gpu = { vendor: caps.vendor, architecture: caps.architecture, shaderF16: caps.shaderF16 };
+
+  const descriptor = {
+    id: "test-tiny-qwen3", label: "tiny synthetic qwen3 (adapter self-test)",
+    engineKind: "dense-gguf", architecture: "qwen3", modelUrl: FIXTURE_URL,
+    expectedFormat: "Q8_0", maxSeqDefault: 8,
+    capabilityRequirements: { webgpu: true, shaderF16: false },
+  };
+
+  const ids = [3, 17, 42];
+  let ref;
+  try {
+    const fileBuf = await (await fetch(FIXTURE_URL)).arrayBuffer();
+    const header = parseGGUFHeader(fileBuf, { skipTokenizer: true });
+    const cfg = cfgFromGGUFMeta(header, { archHint: "qwen3" });
+    row("Fixture", "parsed cfg", `${cfg.num_hidden_layers} layers, hidden ${cfg.hidden_size}, vocab ${cfg.vocab_size}`, "ok");
+    ref = await cpuReference(fileBuf, cfg, ids);
+  } catch (e) {
+    row("Fixture", "independent CPU reference", String(e.message || e), "bad");
+    return finish("CANNOT RUN", "Could not build the CPU reference — run `node tools/build-test-gguf.mjs` first.", R);
+  }
+
+  // ---------------------------------------------------------- whole model, one engine
+  row("Whole model", "status", "running…", "dim");
+  let wholeOk = false, wholeDiff = null;
+  try {
+    const engine = await createEngine(descriptor, { layerRange: [0, 2], hasEmbed: true, hasHead: true, maxSeq: 8, device, caps });
+    let logits = null;
+    for (let pos = 0; pos < ids.length; pos++) logits = await engine.headFromHidden(await engine.embedRun(ids[pos], pos));
+    wholeDiff = relDiff(ref.logits, logits);
+    wholeOk = !wholeDiff.nan && wholeDiff.maxDiff < 2e-3;
+
+    // reset() must make a second identical run reproduce the same logits
+    engine.reset();
+    let logits2 = null;
+    for (let pos = 0; pos < ids.length; pos++) logits2 = await engine.headFromHidden(await engine.embedRun(ids[pos], pos));
+    const resetDiff = relDiff(logits, logits2);
+    row("Whole model", "reset() then rerun matches the first run", resetDiff.maxDiff === 0 && !resetDiff.nan ? "ok (bit-exact)" : `diff ${resetDiff.maxDiff}`, resetDiff.maxDiff === 0 ? "ok" : "bad");
+    // Not disposed here: dispose() destroys the underlying WebGPU device, and in
+    // a real room one browser holds exactly one engine on one device. The split
+    // section below stands in for the *other* browser, so it gets its own device
+    // rather than reusing (and inadvertently killing) this one.
+  } catch (e) {
+    row("Whole model", "error", String(e.stack || e), "bad");
+  }
+  cards.get("Whole model").querySelectorAll(".row")[0].children[1].textContent = wholeOk ? "matches CPU reference" : "MISMATCH";
+  cards.get("Whole model").querySelectorAll(".row")[0].children[1].className = "v " + (wholeOk ? "ok" : "bad");
+  if (wholeDiff) row("Whole model", "relative max diff vs CPU reference", wholeDiff.maxDiff.toExponential(2), wholeOk ? "ok" : "bad");
+  R.whole = { ok: wholeOk, maxDiff: wholeDiff ? +wholeDiff.maxDiff.toExponential(5) : null };
+
+  // ---------------------------------------------------------- split across two engine instances
+  // A separate device stands in for the second browser: in a real room, host and
+  // worker are two different devices, never one device holding two engines.
+  row("Split (host + worker)", "status", "running…", "dim");
+  let splitOk = false, splitDiff = null;
+  try {
+    const acquired2 = await acquireDevice({ requireShaderF16: false });
+    const host = await createEngine(descriptor, { layerRange: [0, 1], hasEmbed: true, hasHead: false, maxSeq: 8, device: acquired2.device, caps: acquired2.caps });
+    const worker = await createEngine(descriptor, { layerRange: [1, 2], hasEmbed: false, hasHead: true, maxSeq: 8, device: acquired2.device, caps: acquired2.caps });
+    let logits = null;
+    for (let pos = 0; pos < ids.length; pos++) {
+      const hidden = await host.embedRun(ids[pos], pos);
+      logits = await worker.headFromHidden(await worker.runHidden(hidden, pos));
+    }
+    splitDiff = relDiff(ref.logits, logits);
+    splitOk = !splitDiff.nan && splitDiff.maxDiff < 2e-3;
+    acquired2.device.destroy?.();
+  } catch (e) {
+    row("Split (host + worker)", "error", String(e.stack || e), "bad");
+  }
+  cards.get("Split (host + worker)").querySelectorAll(".row")[0].children[1].textContent = splitOk ? "matches CPU reference" : "MISMATCH";
+  cards.get("Split (host + worker)").querySelectorAll(".row")[0].children[1].className = "v " + (splitOk ? "ok" : "bad");
+  if (splitDiff) row("Split (host + worker)", "relative max diff vs CPU reference", splitDiff.maxDiff.toExponential(2), splitOk ? "ok" : "bad");
+  row("Split (host + worker)", "layerRange [0,1)+[1,2) matches whole-model [0,2)", wholeOk && splitOk ? "both match the same reference" : "n/a", wholeOk && splitOk ? "ok" : "warn");
+  R.split = { ok: splitOk, maxDiff: splitDiff ? +splitDiff.maxDiff.toExponential(5) : null };
+
+  device.destroy?.();
+  const allOk = wholeOk && splitOk;
+  finish(allOk ? "PASS" : "FAIL",
+    allOk ? "The adapter/factory boundary (engine/gpu-adapter.mjs, engine/factory.mjs) loads a real GGUF over a real range request and computes correctly, whole and split. Phase 2's exit gate is met on this hardware."
+          : "A numerical or loading mismatch — do not treat Qwen3 0.6B as reachable until this is understood.",
+    R);
+}
+
+$("go").onclick = () => run().catch((e) => {
+  row("Error", "threw", String(e.stack || e), "bad");
+  finish("CANNOT RUN", "The test threw before finishing.");
+});
+$("copy").onclick = async () => {
+  const t = $("blob"); t.select();
+  try { await navigator.clipboard.writeText(t.value); $("copy").textContent = "Copied — send it back"; }
+  catch { document.execCommand("copy"); $("copy").textContent = "Copied"; }
+  setTimeout(() => ($("copy").textContent = "Copy results"), 2500);
+};
+</script>
+</body>
+</html>

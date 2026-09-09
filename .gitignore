@@ -1,6 +1,7 @@
 certs/
 node_modules/
-models/
+models/*
+!models/registry.mjs
 .DS_Store
 
 # build artefacts

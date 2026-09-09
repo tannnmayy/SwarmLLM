@@ -5,11 +5,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node tests/wire.test.mjs && node tests/split.test.mjs && node tests/plan.test.mjs && node tests/recovery.test.mjs && node tests/qr.test.mjs && node tests/markdown.test.mjs",
+    "test": "node tests/wire.test.mjs && node tests/split.test.mjs && node tests/plan.test.mjs && node tests/recovery.test.mjs && node tests/qr.test.mjs && node tests/markdown.test.mjs && node tests/gpu-adapter.test.mjs",
     "test:wire": "node tests/wire.test.mjs",
     "test:split": "node tests/split.test.mjs",
     "test:plan": "node tests/plan.test.mjs",
     "test:recovery": "node tests/recovery.test.mjs",
+    "test:gpu-adapter": "node tests/gpu-adapter.test.mjs",
     "model": "node tools/fetch-model.mjs smollm2-135m",
     "serve": "node tools/serve.mjs 8443",
     "cert": "bash tools/make-cert.sh",

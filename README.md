@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="tests" src="https://img.shields.io/badge/tests-134%20passing-3ddc84">
+  <img alt="tests" src="https://img.shields.io/badge/tests-168%20passing-3ddc84">
   <img alt="runtime" src="https://img.shields.io/badge/runs%20on-WebRTC%20%2B%20any%20browser-3b5bff">
   <img alt="install" src="https://img.shields.io/badge/install-none-7c5cff">
   <img alt="licence" src="https://img.shields.io/badge/licence-MIT-16171c">
@@ -63,7 +63,9 @@ Everything ticked is backed by a test in this repository or a recorded run, not 
 | Fault recovery — a device leaves mid-answer | working · **13/13 tests** · verified live |
 | Weight caching | working · second join downloads nothing |
 | ChatML prompting + multi-turn + honest context limit | working |
-| WebGPU engine | not started — CPU only, ~5 tok/s |
+| WebGPU kernels (imported `DenseEngine`) | verified on real hardware — kernel + end-to-end self-test, bit-exact at f32/Q8/Q4 ([report](docs/gpu-reports/2026-09-09-phase1-gpu-selftest.json)) |
+| GPU engine factory + adapter (`engine/factory.mjs`, `engine/gpu-adapter.mjs`) | verified on real hardware — loads a real GGUF over an HTTP range request, whole-model and split across two engine instances both match an independent CPU reference to 1.1e-7 relative error ([report](docs/gpu-reports/2026-09-09-phase2-gpu-adapter-selftest.json)) · **34/34 tests** |
+| Model ladder registry (`models/registry.mjs`) — SmolLM/Qwen3 0.6B/1.7B/4B/Qwen3.8 | descriptors exist with honest status tags (verified/experimental/planned); **the live room still only runs SmolLM2** — no real Qwen download is wired in yet |
 
 **Measured, on two browsers:** 60 tokens at **4.99 tok/s**, median network lap
 **63.6 ms**, answer byte-identical to the single-device reference.
@@ -343,9 +345,17 @@ room/
   awake.js       wake lock, so a device in the chain cannot doze
 
 engine/
-  cpu.mjs        the sliceable engine and the four-call contract; isomorphic
+  cpu.mjs          the sliceable CPU engine and the four-call contract; isomorphic
+  factory.mjs      the one place room.js asks for an engine — cpu-smollm | dense-gguf | qwen35-gguf
+  gpu-adapter.mjs  GGUF fetch/parse/validate, GGUF-meta -> DenseEngine cfg mapping, the
+                   same four-call contract over the imported DenseEngine
+  upstream/        vendored WebGPU engine (DenseEngine, GGUF loader, WGSL kernels) — see UPSTREAM.md
+
+models/
+  registry.mjs   the model ladder: one descriptor per model, with an honest status tag
 
 tools/
+  build-test-gguf.mjs  writes the tiny real Q8_0 GGUF fixture gpu-adapter-test.html loads
   serve.mjs      HTTPS + HTTP dev server, signalling attached at /signal
   signal.mjs     introductions only — no message type can carry a prompt
   fetch-model.mjs   download and reshape into per-layer shards
@@ -355,7 +365,9 @@ tools/
   scenario.mjs   when is a swarm worth it?
   make-cert.sh   regenerate the TLS cert for this machine's LAN IP
 
-tests/           wire · split · plan · recovery
+tests/           wire · split · plan · recovery · qr · markdown · gpu-adapter
+tests/fixtures/  the tiny real GGUF file gpu-adapter-test.html loads
+docs/gpu-reports/  dated JSON from gpu-test.html / gpu-adapter-test.html runs, not hand-typed numbers
 deck/            round 1 pitch deck generator
 ```
 
@@ -371,10 +383,21 @@ node tests/plan.test.mjs       # 29 — DP against an independent greedy optimum
                                #      random rooms; Held–Karp against brute force over 120;
                                #      "optimal is never beaten" over 1,483 generated rooms
 node tests/recovery.test.mjs   # 13 — the answer is byte-identical after a device leaves
+node tests/gpu-adapter.test.mjs # 34 — GGUF-meta mapping, descriptor/range validation,
+                                #      factory dispatch; the logic Node can run without a GPU
 ```
 
 Where an exact algorithm exists, it is checked against an independent brute force.
 Where a claim appears in the pitch, there is a test named after the claim.
+
+The GPU path's *numerical* correctness cannot run in Node — there is no WebGPU there —
+so it has its own pages, run manually in a real browser and recorded in
+[`docs/gpu-reports/`](docs/gpu-reports/):
+
+```bash
+open http://localhost:8442/gpu-test.html          # imported kernels vs CPU math
+open http://localhost:8442/gpu-adapter-test.html  # the adapter loading a real GGUF vs CPU math
+```
 
 ## Honest limits
 
@@ -382,8 +405,11 @@ Where a claim appears in the pitch, there is a test named after the claim.
   the planner says so and runs solo.
 - **It scales in capacity, not speed.** Six devices run a model none of them could
   hold — at roughly the speed of the slowest useful subset, not six times anything.
-- **The engine is CPU-only today**, around 5 tok/s. WebGPU is the largest piece of
-  remaining work and would move that by an order of magnitude.
+- **The live room is CPU-only today**, around 5 tok/s. A WebGPU dense-model adapter
+  (`engine/factory.mjs`, `engine/gpu-adapter.mjs`) now exists and is verified against
+  a real GGUF file and an independent CPU reference (see `docs/gpu-reports/`), but
+  no model selector or real Qwen download is wired into the room yet — that is the
+  next phase, not a claim this README is making today.
 - **Context is 512 positions.** Small and real. A question with no room to be answered
   is refused up front rather than cut off mid-sentence.
 - **Losing the host is not recoverable.** The conversation, the tokenizer and the LM

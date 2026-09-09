@@ -25,20 +25,23 @@
 
 import { Mesh } from "./mesh.js";
 import { packWire, unpackWire, looksBad, chooseEncoding } from "./wire.js";
-import { CpuEngine, argmax } from "../engine/cpu.mjs";
+import { argmax } from "../engine/cpu.mjs";
+import { createEngine } from "../engine/factory.mjs";
 import { Tokenizer } from "../tools/tokenizer.mjs";
 import { modelSpec, plan as solvePlan, compareAll } from "../scheduler/plan.js";
 import { rttLookup } from "../scheduler/cost.js";
 import { profile, watchPressure, defaultPledgeBytes } from "../scheduler/probe.js";
 import { keepAwake } from "./awake.js";
+import { MODELS, getModel } from "../models/registry.mjs";
 
 // The system turn. Short on purpose: every token here is a token of context the
 // conversation does not get, and the window is only 512 positions wide.
 const SYSTEM = "You are a helpful AI assistant running across several devices at once.";
 
-export const MODELS = {
-  "smollm2-135m": { label: "SmolLM2 135M", dir: "/models/smollm2-135m", layers: 30 },
-};
+// Re-exported for callers that already do `import { MODELS } from "./room.js"`
+// (room.html). The room itself now asks the registry, not this file, for a
+// model's shape — see models/registry.mjs.
+export { MODELS };
 
 export class Room {
   constructor({ code, name, model = "smollm2-135m" } = {}) {
@@ -82,7 +85,7 @@ export class Room {
   get code() { return this.mesh.room; }
 
   async join({ pledgeBytes = null } = {}) {
-    const dir = MODELS[this.model].dir;
+    const dir = getModel(this.model).dir;
     const manifest = await (await fetch(dir + "/manifest.json")).json();
     this.spec = modelSpec(manifest, { precision: "f32", maxSeq: 512 });
     // f32 on the wire when it costs no extra SCTP slice, so a split answer is
@@ -364,9 +367,9 @@ export class Room {
   // ---------------------------------------------------------------- loading
   async _load(range, hasEmbed, hasHead) {
     this._emit("loading", { range, pct: 0 });
-    const dir = MODELS[this.model].dir;
+    const descriptor = getModel(this.model);
     let lastSent = 0;
-    this.engine = await CpuEngine.load(dir, {
+    this.engine = await createEngine(descriptor, {
       layerRange: range,
       hasEmbed,
       hasHead,

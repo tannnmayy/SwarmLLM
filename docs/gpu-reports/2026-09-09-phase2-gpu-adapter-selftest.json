@@ -1,0 +1,10 @@
+{
+ "t": "2026-09-09T17:16:51.643Z",
+ "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.49585.0 Chrome/152.0.7977.76 Safari/537.36 MSIX",
+ "fixture": "http://localhost:8442/tests/fixtures/tiny-qwen3-q8.gguf",
+ "gpu": { "vendor": "amd", "architecture": "gcn-5", "shaderF16": true },
+ "whole": { "ok": true, "maxDiff": 1.11571e-7 },
+ "split": { "ok": true, "maxDiff": 1.11571e-7 },
+ "verdict": "PASS",
+ "message": "The adapter/factory boundary (engine/gpu-adapter.mjs, engine/factory.mjs) loads a real GGUF over a real range request and computes correctly, whole and split. Phase 2's exit gate is met on this hardware."
+}

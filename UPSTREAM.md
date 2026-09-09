@@ -62,7 +62,10 @@ Everything outside `engine/upstream/`:
 | `scheduler/` | cost model, exact placement solver, device profiler |
 | `room/` | mesh, wire format, room orchestration, QR, Markdown, wake lock |
 | `engine/cpu.mjs` | our CPU engine — kept as the reference the GPU path is checked against, and as the fallback for devices without WebGPU |
-| `tools/`, `tests/` | tooling and the 133 gates |
+| `engine/factory.mjs` | the one place the room asks for an engine; routes by `engineKind` so room.js never imports `CpuEngine` or the GPU adapter directly |
+| `engine/gpu-adapter.mjs` | the boundary around the imported `DenseEngine`: WebGPU device acquisition with classified errors, GGUF fetch/parse/validation, GGUF-metadata → engine-cfg mapping, range-fetch caching — everything upstream's engine layer does not do for you |
+| `models/registry.mjs` | the model ladder descriptors and their status tags (verified / experimental / planned) |
+| `tools/`, `tests/` | tooling and the gates (168 as of the last GPU-adapter pass; see CHECKLIST.md) |
 
 ## Re-importing
 
