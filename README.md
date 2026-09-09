@@ -40,7 +40,7 @@ exactly.
 | Split output identical to one device | working · 11/11, wire codec in the loop |
 | End-to-end swarm over WebRTC | working · answers stream to every screen |
 | Profiler + DP partitioner + chain order + host election | working · 29/29 tests |
-| Fault recovery (device leaves mid-answer) | next |
+| Fault recovery (device leaves mid-answer) | working · 12/12 tests · verified live |
 | WebGPU engine | next |
 
 Measured across two browsers on one machine: 60 tokens, layers 0-12 and 13-29,

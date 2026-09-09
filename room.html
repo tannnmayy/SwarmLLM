@@ -113,6 +113,7 @@
     </select>
     <button id="start">Start the swarm</button>
     <button id="reset" class="ghost hide">New conversation</button>
+    <button id="kill" class="danger hide">Drop a device</button>
   </div>
   <div class="pbar hide" id="loadBar"><i></i></div>
   <div class="dim hide" id="loadTxt" style="font-size:11px;margin-top:5px"></div>
@@ -122,6 +123,12 @@
   <h2>What each strategy would do <span class="dim" id="cmpNote">predicted</span></h2>
   <table id="cmp"></table>
   <div class="why" id="why" style="margin-top:10px"></div>
+</div>
+
+<div class="card hide" id="recCard" style="border-color:#4a3a12;background:#1c1710">
+  <h2 style="color:var(--warn)">Recovery <span id="recPhase" class="dim"></span></h2>
+  <div id="recMsg" style="font-size:14px"></div>
+  <div class="pbar" id="recBar"><i style="background:var(--warn)"></i></div>
 </div>
 
 <div class="card hide" id="chatCard">
@@ -314,6 +321,7 @@ async function join() {
   room.on("ready", () => {
     show("loadBar", false); show("loadTxt", false);
     show("chatCard", true); show("statCard", true); show("reset", true);
+    show("kill", room.isHost && room.chain.length > 0);
     $("model").textContent = MODELS["smollm2-135m"].label;
     $("s-dev").textContent = (room.chain?.length || 0) + 1;
     log("swarm online", "ok");
@@ -344,6 +352,52 @@ async function join() {
     log(`${s.tokens} tokens in ${s.ms} ms — ${s.tps} tok/s` + (s.medianHopMs ? `, median lap ${s.medianHopMs} ms` : ""), "ok");
   });
   room.on("reset", () => { $("chat").innerHTML = ""; log("conversation reset"); });
+
+  // ---- recovery
+  const recBar = () => $("recBar").firstElementChild;
+  room.on("chain-broken", (id) => {
+    const nm = room.peers.find((p) => p.id === id)?.name || id;
+    log(`${nm} left the chain mid-answer`, "bad");
+  });
+  room.on("dropping", (id, nm) => log(`asking ${nm} to leave — this is the real failure path`, "warn"));
+  room.on("asked-to-leave", () => { log("this device was dropped from the room", "warn"); show("recCard", true); $("recMsg").textContent = "You were dropped from the room. Reload to rejoin."; });
+  room.on("host-lost", () => {
+    show("recCard", true);
+    $("recPhase").textContent = "cannot continue";
+    $("recMsg").textContent = "The host left. The conversation, the tokenizer and the LM head lived there, so this room cannot heal itself. Someone must start a new one.";
+    log("host lost — unrecoverable from a worker", "bad");
+  });
+  room.on("recovering", ({ why, tokens }) => {
+    show("recCard", true);
+    $("recPhase").textContent = "re-planning";
+    $("recMsg").textContent = `A device left mid-answer (${why}). Re-planning over the devices that remain and rebuilding ${tokens} tokens of state.`;
+    recBar().style.width = "8%";
+  });
+  room.on("kept-range", (r) => log(`kept layers ${r[0]}–${r[1] - 1} — no re-download`, "ok"));
+  room.on("replaying", ({ total }) => {
+    $("recPhase").textContent = "replaying";
+    $("recMsg").textContent = `Re-running ${total} tokens so the new layer holder has a real cache.`;
+    recBar().style.width = "25%";
+  });
+  room.on("replay-progress", ({ done, total }) => {
+    recBar().style.width = (25 + (done / total) * 70).toFixed(0) + "%";
+    $("recPhase").textContent = `replaying ${done}/${total}`;
+  });
+  room.on("recovered", ({ ms, devices, tokens }) => {
+    recBar().style.width = "100%";
+    $("recPhase").textContent = "done";
+    $("recMsg").textContent = `Recovered in ${(ms / 1000).toFixed(1)} s across ${devices} device${devices > 1 ? "s" : ""}, ${tokens} tokens of state rebuilt. The answer continues from where it stopped.`;
+    log(`recovered in ${(ms / 1000).toFixed(1)}s — answer continues`, "ok");
+    setTimeout(() => show("recCard", false), 6000);
+  });
+  room.on("recover-failed", (why) => {
+    $("recPhase").textContent = "failed";
+    $("recMsg").textContent = "Could not recover: " + why;
+    recBar().style.width = "100%";
+    recBar().style.background = "var(--bad)";
+    log("recovery failed: " + why, "bad");
+  });
+  room.on("host-suboptimal", () => log("a faster device is now available to host — will re-plan after this answer", "warn"));
   room.on("error", (e) => log("error: " + e, "bad"));
 
   try {
@@ -370,6 +424,10 @@ $("start").onclick = async () => {
   catch (e) { log("start failed: " + e.message, "bad"); $("start").disabled = false; }
 };
 $("reset").onclick = () => room.resetConversation();
+$("kill").onclick = () => {
+  const nm = room.dropWorker();
+  if (!nm) log("no worker to drop — the room is running solo", "warn");
+};
 const send = () => {
   const t = $("ask").value.trim();
   if (!t || !room) return;

@@ -85,21 +85,30 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [ ] Re-plan and re-deal while running *(plans are recomputed live but not
       re-dealt; ~2–3 h, depends on recovery)*
 
-## 5. Recovery — the H22–30 checkpoint · **NOT STARTED**
+## 5. Recovery — the H22–30 checkpoint
 
-> The deck's subtitle is *"it keeps running even if one of them walks away."*
-> This is the only unbuilt headline claim. Everything else left is polish.
-
-- [~] Detect a peer leaving mid-generation *(detected; currently fails loudly)*
-- [ ] Re-plan over the survivors
-- [ ] Re-deal the orphaned layer range
-- [ ] Replay history onto the new holder to rebuild its KV cache
-- [ ] Resume the stream without restarting the answer
-- [ ] Spare layer copies for instant failover *(stretch)*
-- [ ] **Gate: close a tab mid-generation and the answer still finishes**
-
-*Estimated 4–6 h. Everything it needs is in place: the host holds full token
-history, and re-planning over survivors is one `solvePlan` call.*
+- [x] Detect a peer leaving mid-generation, and fail the in-flight lap at once
+      rather than waiting out its timeout
+- [x] Re-plan over the survivors — including devices the planner had stood down,
+      which get recruited back when they are suddenly needed
+- [x] Re-deal the orphaned layer range
+- [x] A device whose range is unchanged keeps its weights and clears only its
+      cache — recovery costs seconds, not a re-download
+- [x] Replay history so the new holder's KV cache is real, not empty
+- [x] Resume from the same position, with the same answer
+- [x] Honest failure: a room that can no longer hold the model says so instead of
+      dealing an impossible plan
+- [x] `dropWorker()` demo instrument — takes the same code path an unplanned
+      disconnect takes, so the rehearsed version is the real one
+- [x] **12/12 recovery tests** — the answer is byte-identical to the
+      uninterrupted run after the middle device leaves, and after the last one does
+- [x] **Gate met live:** dropped a worker 58 tokens into an answer; the room
+      recruited the stood-down spare, replayed 58 tokens, recovered in **13.1 s**
+      and finished the sentence it was in the middle of
+- [ ] Spare layer copies for instant failover *(stretch; would cut the 13 s to
+      near zero by keeping a warm replica)*
+- [ ] Host loss *(unrecoverable by design today: the conversation, tokenizer and
+      LM head all live on the host. Reported clearly rather than hung)*
 
 ## 6. Dashboard — the H30–36 checkpoint
 
@@ -117,7 +126,7 @@ history, and re-planning over survivors is one `solvePlan` call.*
 
 - [x] MIT licence and `NOTICE.md` stating prior art and what is ours
 - [x] README with honest status and findings
-- [x] 70 tests across three suites
+- [x] 82 tests across four suites
 - [ ] CI running the tests on push *(~0.5 h)*
 - [ ] Round 1 pitch deck *(in progress)*
 
@@ -127,20 +136,19 @@ history, and re-planning over survivors is one `solvePlan` call.*
 
 | Against | Complete |
 |---|---|
-| What the pitch deck promises | **~70%** — 8 of 12 claims done and demonstrable |
-| A finished product | ~40% |
+| What the pitch deck promises | **~85%** — 10 of 12 claims done and demonstrable |
+| A finished product | ~50% |
 | SwarmLLM parity (27B, custom WGSL) | ~25% — and not the goal |
 
-**9–15 hours of work remain to deliver everything the deck claims**, against 36
-hours available.
+**4–7 hours of work remain to deliver everything the deck claims**, against 36
+hours available. Every headline claim in the deck is now built and demonstrated.
 
 ### Critical path
 
-1. **Recovery** (4–6 h) — the only unbuilt headline
-2. Re-plan and re-deal live (2–3 h)
-3. Weight caching (1–2 h) — biggest UX win for phones
-4. Multi-turn (1–2 h)
-5. Battery/thermal into the cost model (1–2 h)
+1. Weight caching (1–2 h) — biggest UX win for phones; they re-download on every join
+2. Multi-turn conversation and an honest context limit (1–2 h)
+3. Battery/thermal into the cost model (1–2 h) — closes the last ⚠️
+4. Topology graph + rehearsals (1–2 h)
 
 Everything after that is stretch: WebGPU, larger models, prefill batching, TURN.
 

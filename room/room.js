@@ -57,6 +57,9 @@ export class Room {
     this.pledgeBytes = null;      // what the user chose to contribute
     this.rttMatrix = new Map();   // id -> { id: ms }, gossiped so the host sees it all
     this.lastPlan = null;
+    this.history = [];            // every token fed so far; what recovery replays
+    this.recovering = false;
+    this.strategy = "optimal";
     this._wire();
   }
 
@@ -192,12 +195,25 @@ export class Room {
     this.mesh.on("left", (id, why) => {
       this._emit("roster", this.peers);
       this._emit("peer-left", id, why);
-      // A device in the chain leaving mid-answer is the case the scheduler's recovery
-      // path exists for. Until that lands, fail loudly rather than hanging forever.
-      if (this.busy && (this.chain.includes(id) || id === this.hostId)) {
-        for (const [, resolve] of this.waiting) resolve(null);
-        this.waiting.clear();
-        this._emit("chain-broken", id);
+
+      if (!this.isHost) {
+        // Losing the host is not recoverable from here: the conversation, the
+        // tokenizer state and the LM head all live there. Say so plainly.
+        if (id === this.hostId) this._emit("host-lost", id);
+        return;
+      }
+      if (!this.chain.includes(id)) return;          // a bystander left; nothing to do
+
+      this._emit("chain-broken", id);
+      // Fail any lap still in flight straight away rather than waiting out its
+      // timeout -- _stepSafe turns that failure into a recovery.
+      for (const [, resolve] of this.waiting) resolve(null);
+      this.waiting.clear();
+
+      // If nothing is generating, there is no lap to fail, so re-plan now rather
+      // than letting the next question discover the chain is broken.
+      if (!this.busy && !this.recovering && this.engine) {
+        this._recover("a device left while the room was idle");
       }
     });
 
@@ -208,14 +224,26 @@ export class Room {
   // ---------------------------------------------------------------- control
   async _onMsg(from, m) {
     switch (m.t) {
-      case "deal":
+      case "deal": {
+        // A re-deal after a failure usually leaves most devices holding exactly what
+        // they held before. Re-downloading those layers would turn a two-second
+        // recovery into a thirty-second one, so keep the weights and clear only the
+        // cache — the host is about to replay the conversation into it anyway.
+        const same = this.engine && this.range &&
+          this.range[0] === m.range[0] && this.range[1] === m.range[1];
         this.hostId = m.host;
         this.range = m.range;
         this.next = m.next;
         this.isHost = false;
-        await this._load(m.range, false, false);
+        if (same) {
+          this.engine.reset();
+          this._emit("kept-range", this.range);
+        } else {
+          await this._load(m.range, false, false);
+        }
         this.mesh.send(this.hostId, { t: "ready", range: this.range });
         break;
+      }
 
       case "progress":
         this._emit("progress", from, m.pct);
@@ -224,9 +252,11 @@ export class Room {
       case "ready":
         this._readyCount = (this._readyCount || 0) + 1;
         this._emit("worker-ready", from, m.range);
-        if (this._readyCount >= this.chain.length) {
-          this.mesh.broadcast({ t: "ready-all" });
-          this._emit("ready");
+        if (this._pending && this._readyCount >= this._pending.need) {
+          clearTimeout(this._pending.timer);
+          const done = this._pending.resolve;
+          this._pending = null;
+          done();
         }
         break;
 
@@ -257,6 +287,13 @@ export class Room {
 
       case "stand-by":
         this._emit("stand-by", m.why);
+        break;
+
+      case "please-leave":
+        // Demo instrument: the host asks a device to walk out, so a failure can be
+        // shown on cue instead of hoping somebody's laptop misbehaves on stage.
+        this._emit("asked-to-leave");
+        this.mesh.close();
         break;
 
       case "reset":
@@ -360,6 +397,7 @@ export class Room {
   // is ~8 layers of arithmetic and it is serial on the host.
   async start({ strategy = "optimal" } = {}) {
     if (!this.myProfile) { this._emit("error", "still measuring this device"); return; }
+    this.strategy = strategy;
 
     const devices = this._devices();
     const p = solvePlan(this.spec, devices, this._rtt(), { strategy });
@@ -380,7 +418,24 @@ export class Room {
     await this._deal(p);
   }
 
-  async _deal(p) {
+  // Wait until `n` workers report ready. Resolves immediately if they already have --
+  // a worker that kept its range replies almost instantly, and can beat us here.
+  _waitForWorkers(n, timeoutMs = 120000) {
+    if (n <= 0 || (this._readyCount || 0) >= n) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      this._pending = {
+        need: n, resolve,
+        timer: setTimeout(() => {
+          this._pending = null;
+          reject(new Error(`${n - (this._readyCount || 0)} device(s) never finished loading`));
+        }, timeoutMs),
+      };
+    });
+  }
+
+  // Deal a plan and bring the room online. Used both for the first start and for
+  // every recovery, so there is one code path that can be wrong rather than two.
+  async _deal(p, { replay = false } = {}) {
     this.isHost = true;
     this.hostId = this.id;
     this._readyCount = 0;
@@ -388,6 +443,10 @@ export class Room {
     const workers = p.chain.slice(1);
     this.chain = workers;
     this._emit("plan", p.chain.map((id, i) => ({ id, range: p.ranges[i], self: id === this.id })));
+
+    // Arm the wait before dealing: a worker that keeps its range can reply "ready"
+    // before this function gets another turn on the event loop.
+    const ready = this._waitForWorkers(workers.length);
 
     // Each worker learns its range and who it forwards to; the last returns to me.
     for (let i = 1; i < p.chain.length; i++) {
@@ -401,15 +460,99 @@ export class Room {
     }
     // Devices the planner left out are told why, rather than left wondering.
     for (const id of p.dropped) {
-      this.mesh.send(id, { t: "stand-by", why: p.why.find((w) => w.includes(this.peers.find((x) => x.id === id)?.name || " ")) || "not needed for this plan" });
+      this.mesh.send(id, { t: "stand-by", why: p.why.find((w) => w.includes(this.peers.find((x) => x.id === id)?.name || " ")) || "not needed for this plan" });
     }
 
-    this.range = p.ranges[0];
+    const mine = p.ranges[0];
+    const same = this.engine && this.range && this.range[0] === mine[0] && this.range[1] === mine[1];
+    this.range = mine;
     this.next = workers[0] || null;
-    await this._load(this.range, true, true);
+    if (same) this.engine.reset(); else await this._load(mine, true, true);
 
-    if (!workers.length) { this._emit("ready"); return; }
-    this._emit("waiting-for-workers", workers.length);
+    if (workers.length) this._emit("waiting-for-workers", workers.length);
+    await ready;
+
+    if (replay) await this._replay();
+    this.mesh.broadcast({ t: "ready-all" });
+    this._emit("ready");
+  }
+
+  // Re-run the conversation so far, so a device holding a moved layer range ends up
+  // with a real KV cache rather than an empty one.
+  //
+  // Deliberately does NOT broadcast a reset first. Every worker already cleared its
+  // cache when it handled `deal`, and control messages travel on a different data
+  // channel from activations -- so a reset sent here could arrive *after* the first
+  // replayed frame and wipe the very state it was meant to prepare.
+  //
+  // Replay is idempotent: re-running position p with the same token writes the same
+  // K and V a device already held, so devices that kept their range are unharmed.
+  async _replay() {
+    const hist = this.history.slice();
+    if (!hist.length) return null;
+    this.history = [];
+    this.pos = 0;
+    this._emit("replaying", { total: hist.length });
+
+    let logits = null;
+    for (let i = 0; i < hist.length; i++) {
+      logits = await this._step(hist[i], this.pos);
+      this.history.push(hist[i]);
+      this.pos++;
+      if (i % 4 === 3 || i === hist.length - 1) {
+        this._emit("replay-progress", { done: i + 1, total: hist.length });
+      }
+    }
+    this._emit("replayed", { total: hist.length });
+    return logits;
+  }
+
+  // ---------------------------------------------------------------- recovery
+  //
+  // A device leaving mid-answer is normal behaviour, not an outage. Re-plan over who
+  // is left, move the orphaned layers, rebuild the lost cache by replaying what has
+  // been said, and carry on from the same position.
+  //
+  // The property that matters is not "it does not crash" -- it is that the answer is
+  // unchanged. A room that survives a failure by quietly producing different text has
+  // not recovered; it has started a different conversation without saying so.
+  async _recover(why) {
+    if (this.recovering) return false;
+    this.recovering = true;
+    const t0 = performance.now();
+    this._emit("recovering", { why, tokens: this.history.length });
+
+    try {
+      const devices = this._devices();
+      const p = solvePlan(this.spec, devices, this._rtt(), { strategy: this.strategy || "optimal" });
+
+      if (!p) {
+        this._emit("recover-failed", "the devices left cannot hold the model between them");
+        return false;
+      }
+      if (p.host !== this.id) {
+        // The planner would rather someone else hosted. Mid-answer we decline: the
+        // conversation history lives here, and handing over would lose it. Note it
+        // and re-plan properly at the end of the answer.
+        this._emit("host-suboptimal", p.host);
+      }
+      this.lastPlan = p;
+      this._emit("planned", p);
+
+      await this._deal(p, { replay: true });
+
+      this._emit("recovered", {
+        ms: Math.round(performance.now() - t0),
+        devices: p.chain.length,
+        tokens: this.history.length,
+      });
+      return true;
+    } catch (e) {
+      this._emit("recover-failed", e.message);
+      return false;
+    } finally {
+      this.recovering = false;
+    }
   }
 
   // ---------------------------------------------------------------- generate
@@ -430,6 +573,30 @@ export class Room {
     return this.engine.headFromHidden(x);
   }
 
+  // Advance the conversation by one token, surviving a device that leaves while the
+  // lap is in flight. History is appended only after the step succeeds, so a recovery
+  // replays exactly what was actually processed -- no more, no less.
+  async _feed(tokenId) {
+    const pos = this.pos;
+    const logits = await this._stepSafe(tokenId, pos);
+    this.history.push(tokenId);
+    this.pos = pos + 1;
+    return logits;
+  }
+
+  async _stepSafe(tokenId, pos) {
+    try {
+      return await this._step(tokenId, pos);
+    } catch (e) {
+      if (this.recovering) throw e;               // already recovering; do not nest
+      const healed = await this._recover(e.message);
+      if (!healed) throw e;
+      // _replay left this.pos exactly where it was, so the same position is retried
+      // against the new chain.
+      return await this._step(tokenId, pos);
+    }
+  }
+
   async generate(text, askedBy = null, { maxTokens = 60 } = {}) {
     if (this.busy) return;
     if (!this.isHost) { this.mesh.send(this.hostId, { t: "ask", text }); return; }
@@ -444,7 +611,7 @@ export class Room {
     try {
       const ids = this.tok.encode(text);
       let logits = null;
-      for (const id of ids) logits = await this._step(id, this.pos++);
+      for (const id of ids) logits = await this._feed(id);
 
       for (let n = 0; n < maxTokens; n++) {
         const next = argmax(logits);
@@ -453,7 +620,7 @@ export class Room {
         this.mesh.broadcast({ t: "token", text: piece });
         this._emit("token", piece);
         this.stats.tokens++;
-        logits = await this._step(next, this.pos++);
+        logits = await this._feed(next);
         if (this.pos >= this.engine.maxSeq - 2) break;
       }
     } catch (e) {
@@ -474,9 +641,22 @@ export class Room {
     this.busy = false;
   }
 
+  // Drop a device from the chain on purpose. This is the "kill a node" demo, and it
+  // exercises exactly the same path an unplanned disconnect takes -- there is no
+  // separate, gentler code path for the rehearsed version.
+  dropWorker(id = null) {
+    if (!this.isHost || !this.chain.length) return null;
+    const victim = id || this.chain[this.chain.length - 1];
+    const name = this.peers.find((p) => p.id === victim)?.name || victim;
+    this._emit("dropping", victim, name);
+    this.mesh.send(victim, { t: "please-leave" });
+    return name;
+  }
+
   resetConversation() {
     this.engine?.reset();
     this.pos = 0;
+    this.history = [];
     this.mesh.broadcast({ t: "reset" });
     this._emit("reset");
   }
