@@ -82,8 +82,8 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [x] Scenario analysis tool (`tools/scenario.mjs`)
 - [ ] Battery and thermal signals **used in the cost model** *(read today, not
       weighted; ~1–2 h)*
-- [ ] Re-plan and re-deal while running *(plans are recomputed live but not
-      re-dealt; ~2–3 h, depends on recovery)*
+- [x] Re-plan and re-deal while running — the recovery path does exactly this, and
+      it recruits devices the planner had previously stood down
 
 ## 5. Recovery — the H22–30 checkpoint
 
@@ -119,7 +119,8 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [x] The planner's reasoning, in words
 - [x] Predicted vs actual tokens/sec
 - [ ] Topology graph showing the chain visually *(~1–2 h)*
-- [ ] "Kill a node" button for the demo *(~0.5 h, after recovery)*
+- [x] "Kill a node" button for the demo — drives the real failure path, not a
+      simulated one
 - [ ] Three full rehearsals + a recorded backup *(non-negotiable)*
 
 ## 7. Project hygiene
