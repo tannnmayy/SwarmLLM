@@ -2,3 +2,6 @@ certs/
 node_modules/
 models/
 .DS_Store
+
+# build artefacts
+*.pptx
