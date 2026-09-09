@@ -312,8 +312,15 @@ async function join() {
     $("start").disabled = true;
     $("start").textContent = room.isHost ? "Swarm running" : "Holding layers";
   });
-  room.on("loaded", ({ range, mb }) => {
-    log(`loaded layers ${range[0]}–${range[1] - 1} (${mb.toFixed(1)} MB)`, "ok");
+  room.on("loaded", ({ range, mb, cache }) => {
+    let how = `${mb.toFixed(1)} MB`;
+    if (cache && (cache.hits || cache.misses)) {
+      const cachedMB = cache.bytesFromCache / MB;
+      how += cache.hits && !cache.misses ? ` — all from cache, no download`
+           : cache.hits ? ` — ${cachedMB.toFixed(0)} MB from cache, ${cache.misses} shard(s) downloaded`
+           : ` downloaded${cache.storeFailed ? " (cache full — will re-download next time)" : ", cached for next time"}`;
+    }
+    log(`loaded layers ${range[0]}–${range[1] - 1} (${how})`, "ok");
     $("s-lay").textContent = range[1] - range[0];
     renderDevices();
   });

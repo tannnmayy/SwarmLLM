@@ -20,16 +20,69 @@
 // the reference run in Node and the slice running on a phone execute the same code.
 const inNode = typeof window === "undefined";
 
-async function readBytes(dir, file) {
+// Weight shards are immutable for a given model build, so a device should download
+// each one exactly once and never again. Without this a phone re-fetches its whole
+// slice every time it joins a room -- and during a recovery, every time the layers
+// move. The Cache API is the right store: it holds Responses, survives a reload, and
+// is evicted by the browser under storage pressure rather than by us.
+//
+// Guarded by a byte-length check against the manifest. A truncated or stale entry is
+// worse than no cache at all: it would load as silently wrong weights, and the model
+// would produce plausible nonsense with nothing pointing at the cause.
+const CACHE = "aiswarm-weights-v1";
+let cacheStats = { hits: 0, misses: 0, bytesFromCache: 0, stored: 0, storeFailed: false };
+
+export function cacheStatsSnapshot() { return { ...cacheStats }; }
+export function resetCacheStats() { cacheStats = { hits: 0, misses: 0, bytesFromCache: 0, stored: 0, storeFailed: false }; }
+
+export async function clearWeightCache() {
+  if (inNode || typeof caches === "undefined") return false;
+  return caches.delete(CACHE);
+}
+
+async function readBytes(dir, file, expectBytes = 0) {
   if (inNode) {
     const { readFile } = await import("node:fs/promises");
     const { join } = await import("node:path");
     const b = await readFile(join(dir, file));
     return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
   }
-  const res = await fetch(dir.replace(/\/$/, "") + "/" + file);
+
+  const url = dir.replace(/\/$/, "") + "/" + file;
+  let store = null;
+  try { if (typeof caches !== "undefined") store = await caches.open(CACHE); } catch { /* private mode */ }
+
+  if (store) {
+    try {
+      const hit = await store.match(url);
+      if (hit) {
+        const buf = await hit.arrayBuffer();
+        if (!expectBytes || buf.byteLength === expectBytes) {
+          cacheStats.hits++;
+          cacheStats.bytesFromCache += buf.byteLength;
+          return new Uint8Array(buf);
+        }
+        await store.delete(url);          // stale build: drop it and refetch
+      }
+    } catch { /* fall through to the network */ }
+  }
+
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${file}`);
-  return new Uint8Array(await res.arrayBuffer());
+  const buf = await res.arrayBuffer();
+  if (expectBytes && buf.byteLength !== expectBytes) {
+    throw new Error(`${file}: expected ${expectBytes} bytes, got ${buf.byteLength}`);
+  }
+  cacheStats.misses++;
+  if (store) {
+    // Quota refusals are normal on a phone. Losing the cache is a slower next join,
+    // never a wrong answer, so swallow it and carry on.
+    try {
+      await store.put(url, new Response(buf, { headers: { "content-type": "application/octet-stream" } }));
+      cacheStats.stored++;
+    } catch { cacheStats.storeFailed = true; }
+  }
+  return new Uint8Array(buf);
 }
 
 async function readJSON(dir, file) {
@@ -68,7 +121,7 @@ function widen(u16) {
 }
 
 async function loadShard(dir, entry) {
-  const bytes = await readBytes(dir, entry.file);
+  const bytes = await readBytes(dir, entry.file, entry.bytes || 0);
   // .slice() rather than a view: the fetched buffer may not be 2-byte aligned
   const u16 = new Uint16Array(bytes.slice().buffer);
   const out = {};
@@ -82,6 +135,7 @@ export class CpuEngine {
     const C = manifest.config;
     const [lo, hi] = layerRange || [0, C.layers];
 
+    resetCacheStats();
     const e = new CpuEngine();
     e.cfg = C;
     e.manifest = manifest;
@@ -116,6 +170,7 @@ export class CpuEngine {
       e.bytesLoaded += manifest.shards.final.bytes;
       tick();
     }
+    e.cache = cacheStatsSnapshot();
 
     const D = C.hiddenSize, KVD = C.kvHeads * C.headDim;
     e.kCache = e.layers.map(() => new Float32Array(maxSeq * KVD));

@@ -346,7 +346,7 @@ export class Room {
         }
       },
     });
-    this._emit("loaded", { range, mb: this.engine.bytesLoaded / 2 ** 20 });
+    this._emit("loaded", { range, mb: this.engine.bytesLoaded / 2 ** 20, cache: this.engine.cache || null });
     // From here this device is in the chain, so it must not be allowed to doze.
     keepAwake().catch(() => {});
     this._calibrate();
