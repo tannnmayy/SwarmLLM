@@ -29,10 +29,6 @@ WebRTC. The answer appears on every screen.
 
 ## What this actually is
 
-Browser-based mesh inference already exists — [NOTICE.md](NOTICE.md) names our prior
-art plainly, and we did not fork any of it. **What we are building is the scheduler
-that sits on top of it.**
-
 Existing swarms deal layers in proportion to the memory a device *pledges*, in
 whatever order the devices happened to join. Neither number says how fast a device
 actually computes, or how far it sits from its neighbours — so one slow phone, or one
