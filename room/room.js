@@ -32,6 +32,10 @@ import { rttLookup } from "../scheduler/cost.js";
 import { profile, watchPressure, defaultPledgeBytes } from "../scheduler/probe.js";
 import { keepAwake } from "./awake.js";
 
+// The system turn. Short on purpose: every token here is a token of context the
+// conversation does not get, and the window is only 512 positions wide.
+const SYSTEM = "You are a helpful AI assistant running across several devices at once.";
+
 export const MODELS = {
   "smollm2-135m": { label: "SmolLM2 135M", dir: "/models/smollm2-135m", layers: 30 },
 };
@@ -58,6 +62,7 @@ export class Room {
     this.rttMatrix = new Map();   // id -> { id: ms }, gossiped so the host sees it all
     this.lastPlan = null;
     this.history = [];            // every token fed so far; what recovery replays
+    this.turns = [];              // the conversation, as chat turns
     this.recovering = false;
     this.strategy = "optimal";
     this._wire();
@@ -597,9 +602,40 @@ export class Room {
     }
   }
 
+  // ChatML, and only for the turn being added. `SYSTEM` is prepended once.
+  _turnPrompt(text) {
+    const first = this.turns.length === 0;
+    const sys = first ? `<|im_start|>system
+${SYSTEM}<|im_end|>
+` : "";
+    return `${sys}<|im_start|>user
+${text}<|im_end|>
+<|im_start|>assistant
+`;
+  }
+
+  // How much of the context window is spoken for. The limit is real and small
+  // (512 positions), so it is reported rather than discovered when the room stops
+  // making sense.
+  context() {
+    const limit = (this.engine?.maxSeq || 512) - 4;
+    return { used: this.pos, limit, frac: this.pos / limit, turns: this.turns.length };
+  }
+
   async generate(text, askedBy = null, { maxTokens = 60 } = {}) {
     if (this.busy) return;
     if (!this.isHost) { this.mesh.send(this.hostId, { t: "ask", text }); return; }
+
+    // Refuse a question there is no room to answer, rather than starting one and
+    // stopping mid-sentence. Sliding the window would mean re-prefilling the whole
+    // conversation across the room; at this context size, saying so is honester.
+    const need = this.tok.encode(this._turnPrompt(text)).length + 16;
+    const ctx = this.context();
+    if (ctx.used + need > ctx.limit) {
+      this._emit("context-full", { ...ctx, need });
+      return;
+    }
+
     this.busy = true;
     this.stats = { tokens: 0, ms: 0, hops: [] };
 
@@ -609,19 +645,40 @@ export class Room {
 
     const t0 = performance.now();
     try {
-      const ids = this.tok.encode(text);
+      // The model is instruction-tuned on ChatML, so it has to be spoken to in
+      // ChatML. Fed raw text it does what a base model does -- continues the
+      // sentence -- which is why an untemplated demo reads like autocomplete
+      // rather than an assistant answering.
+      //
+      // Only THIS turn is encoded. Everything before it is already in the KV
+      // caches spread across the room, so a follow-up question costs one short
+      // prefill rather than replaying the conversation.
+      const ids = this.tok.encode(this._turnPrompt(text));
+      this.turns.push({ role: "user", content: text });
+
       let logits = null;
       for (const id of ids) logits = await this._feed(id);
 
+      let answer = "";
       for (let n = 0; n < maxTokens; n++) {
         const next = argmax(logits);
-        if (next === this.engine.cfg.eos) break;
+        if (next === this.engine.cfg.eos) break;          // <|im_end|>
         const piece = this.tok.decode([next]);
+        answer += piece;
         this.mesh.broadcast({ t: "token", text: piece });
         this._emit("token", piece);
         this.stats.tokens++;
         logits = await this._feed(next);
+        if (this.pos >= this.engine.maxSeq - 4) { this._emit("truncated"); break; }
+      }
+      this.turns.push({ role: "assistant", content: answer });
+
+      // Close the assistant turn in the cache. Without this the next question
+      // would run straight on from the answer instead of starting a new turn,
+      // and the model would keep writing the reply it had just finished.
+      for (const id of this.tok.encode("<|im_end|>\n")) {
         if (this.pos >= this.engine.maxSeq - 2) break;
+        await this._feed(id);
       }
     } catch (e) {
       this._emit("error", e.message);
@@ -636,6 +693,7 @@ export class Room {
         ? +this.stats.hops.slice().sort((a, b) => a - b)[this.stats.hops.length >> 1].toFixed(1)
         : null,
     };
+    s.context = this.context();
     this.mesh.broadcast({ t: "gen-done", stats: s });
     this._emit("gen-done", s);
     this.busy = false;
@@ -657,6 +715,7 @@ export class Room {
     this.engine?.reset();
     this.pos = 0;
     this.history = [];
+    this.turns = [];
     this.mesh.broadcast({ t: "reset" });
     this._emit("reset");
   }

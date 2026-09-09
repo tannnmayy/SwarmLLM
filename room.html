@@ -149,6 +149,7 @@
     <div><b id="s-hop">—</b><span>median lap</span></div>
     <div><b id="s-dev">—</b><span>in chain</span></div>
     <div><b id="s-lay">—</b><span>my layers</span></div>
+    <div><b id="s-ctx">—</b><span>context used</span></div>
   </div>
 </div>
 
@@ -345,12 +346,22 @@ async function join() {
     answerEl.textContent += piece;
     $("chat").scrollTop = $("chat").scrollHeight;
   });
+  room.on("context-full", ({ used, limit, turns }) => {
+    bubble("q", "swarm", `The context window is full — ${used} of ${limit} positions across ${turns} turn${turns === 1 ? "" : "s"}. This model holds 512, which is small and real. Press "New conversation" to start again.`);
+    log(`context full: ${used}/${limit}`, "warn");
+  });
+  room.on("truncated", () => log("answer cut short — hit the context limit", "warn"));
+
   room.on("gen-done", (s) => {
     answerEl?.parentElement.classList.remove("cursor");
     answerEl = null;
     $("s-tps").textContent = s.tps ?? "—";
     $("s-tok").textContent = s.tokens;
     $("s-hop").textContent = s.medianHopMs == null ? "solo" : s.medianHopMs + " ms";
+    if (s.context) {
+      $("s-ctx").textContent = `${s.context.used}/${s.context.limit}`;
+      $("s-ctx").style.color = s.context.frac > 0.85 ? "var(--warn)" : "";
+    }
     if (predicted && s.tps) {
       const err = ((s.tps - predicted) / predicted) * 100;
       $("vsPred").textContent = `model was ${err >= 0 ? "+" : ""}${err.toFixed(0)}% off`;

@@ -45,7 +45,8 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [ ] **WebGPU engine** *(the big one; ~10–16 h. 5 tok/s → tens)*
 - [ ] Batched prefill *(token-by-token today; ~3–4 h)*
 - [ ] Larger models fetched and tested (Qwen3 0.6B / 1.7B) *(~1–2 h)*
-- [ ] Weight caching in the Cache API *(phones re-download every join; ~1–2 h)*
+- [x] Weight caching in the Cache API — byte-length checked against the manifest,
+      quota refusals tolerated. Second join reports "all from cache, no download"
 
 ## 3. Room
 
@@ -57,8 +58,12 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 - [x] Wake lock so a device in the chain cannot doze (`room/awake.js`)
 - [x] Verified live: 60 tokens across two browsers, answer byte-identical to the
       single-device reference
-- [ ] Multi-turn conversation and an honest context limit *(`maxSeq` is 512 and
-      unmanaged; ~1–2 h)*
+- [x] ChatML prompting — the model is instruction-tuned, and fed raw text it
+      continues sentences instead of answering. Templated, it replies and stops
+- [x] Multi-turn: only the new turn is encoded, since the KV caches across the room
+      already hold the rest. A follow-up costs ~26 positions, not a replay
+- [x] Honest context limit — a question with no room to be answered is refused up
+      front rather than cut off mid-sentence; usage is shown live
 - [ ] Actionable errors and a diagnostic report *(~1 h)*
 
 ## 4. Scheduler — the H14–22 checkpoint · **the contribution**
@@ -141,15 +146,14 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 | A finished product | ~50% |
 | SwarmLLM parity (27B, custom WGSL) | ~25% — and not the goal |
 
-**4–7 hours of work remain to deliver everything the deck claims**, against 36
+**2–5 hours of work remain to deliver everything the deck claims**, against 36
 hours available. Every headline claim in the deck is now built and demonstrated.
 
 ### Critical path
 
-1. Weight caching (1–2 h) — biggest UX win for phones; they re-download on every join
-2. Multi-turn conversation and an honest context limit (1–2 h)
-3. Battery/thermal into the cost model (1–2 h) — closes the last ⚠️
-4. Topology graph + rehearsals (1–2 h)
+1. Battery/thermal into the cost model (1–2 h) — closes the last ⚠️
+2. Topology graph showing the chain visually (1–2 h)
+3. Three full rehearsals + a recorded backup (non-negotiable)
 
 Everything after that is stretch: WebGPU, larger models, prefill batching, TURN.
 
