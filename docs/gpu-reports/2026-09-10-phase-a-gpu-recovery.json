@@ -1,0 +1,86 @@
+{
+  "t": "2026-09-10T02:10:00Z",
+  "phase": "A — GPU worker recovery",
+  "model": "qwen3-0.6b",
+  "modelFile": "models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf",
+  "gpu": { "vendor": "amd", "architecture": "gcn-5", "shaderF16": true },
+  "scenario": "Live two-tab WebRTC room, real WebGPU on both devices, strategy 'even' (forced 14+14 split). Host sends a chat prompt; while generation is in flight, the host's own 'Drop a device' instrument (room.dropWorker(), the same path a real disconnect takes) removes the sole worker. Matches IMPLEMENTATION_PLAN.md Phase A, Step A.4, Option 1 (down to one survivor -> falls back to solo) -- the direct GPU analog of tests/recovery.test.mjs's CPU case.",
+  "codeChangesUnderTest": [
+    {
+      "id": "A.1",
+      "file": "room/room.js",
+      "change": "this.engine?.dispose?.() added at the top of _load() and before the model-changed branch's this.engine = null in the 'deal' handler, so a superseded GpuEngineAdapter's WebGPU device is destroyed instead of leaked.",
+      "priorState": "grep dispose room/room.js matched nothing -- confirmed by inspection before this session's edits."
+    },
+    {
+      "id": "A.2",
+      "file": "engine/gpu-adapter.mjs",
+      "change": "Exported checkDeviceLost(device); GpuEngineAdapter.embedRun/runHidden/headFromHidden now catch, call it, and rethrow -- so a device lost mid-generation (not just mid-load) surfaces the same honest 'GPU device lost (...)' message load-time loss already got, instead of a raw Dawn exception.",
+      "liveTrigger": "Not exercised live this session -- no actual WebGPU device-lost event occurred (the failure mode tested here is peer disconnect, not GPU driver/device loss). Covered by a Node unit test (tests/gpu-adapter.test.mjs) instead; still a real gap until a live device-loss event is captured."
+    },
+    {
+      "id": "A.new",
+      "file": "room/room.js",
+      "change": "Found live, not anticipated by the plan text: the chain-broken handler's fast path (resolve every entry in `this.waiting` immediately) only helps a lap that is already in flight at the instant the mesh 'left' event fires. A lap that starts AFTER that -- sent to `this.next`, which is not repointed until _recover() actually runs -- fell through to the plain 20000 ms setTimeout inside _step(). Fixed by recording departed ids in a new `this._deadPeers` Set in the 'left' handler, and having _step() throw immediately if `this.next` is already in it.",
+      "evidence": "See runs 2 and 3 below: identical kill timing, only the fix differed. chain-broken -> recovering went from 20037 ms to 28 ms."
+    }
+  ],
+  "runs": [
+    {
+      "run": 1,
+      "room": "UMVJ",
+      "note": "First live attempt, unscripted timing -- the kill landed near the tail of a 60-token generation (at the trailing '<|im_end|>\\n' turn-closer, after gen-done had already fired for the visible answer), not mid-loop. Predates the dead-peer fix.",
+      "chainBrokenToRecoveredMs": 10200,
+      "layersReloaded": "[0,28) -- all 28, fresh, from a prior [0,14)",
+      "bytesReloadedMB": 604.1,
+      "historyTokensAtRecovery": 98,
+      "outcome": "Recovered; answer text read as one coherent, non-restarted, non-garbled continuation."
+    },
+    {
+      "run": 2,
+      "room": "67NN",
+      "note": "Instrumented repeat, predates the dead-peer fix. Prompt was sent and the worker was dropped in the same batched tool call (minimal gap) to land the kill as early as possible -- which, combined with the bug this run exposes, meant the very first post-kill lap was sent into the void.",
+      "eventTimeline_ms_sincePageLoad": {
+        "planned_initial": 41662, "loaded_1of2": 45434, "chain-broken": 76248,
+        "recovering": 96285, "planned_recovery": 96286, "loaded_2of2": 99785,
+        "replaying": 99935, "replayed": 99974, "recovered": 99974, "gen-done": 104166
+      },
+      "chainBrokenToRecoveringMs": 20037,
+      "diagnosis": "Matches _step()'s hardcoded 20000 ms per-lap setTimeout almost exactly -- proof the fast-fail path was not the one that fired.",
+      "bytesReloadedMB": 604.1
+    },
+    {
+      "run": 3,
+      "room": "52GZ",
+      "note": "Same instrumentation and same batched send+kill timing as run 2, WITH the dead-peer fix in place. The batch landed the kill after only 1 prompt token had been fed (the earliest possible interruption point), harder than run 2's already-early timing.",
+      "eventTimeline_ms_sincePageLoad": {
+        "planned_initial": 41268, "loaded_1of2": 44695, "chain-broken": 74345,
+        "recovering": 74373, "planned_recovery": 74373, "loaded_2of2": 77374,
+        "replaying": 77530, "replayed": 77572, "recovered": 77572, "gen-done": 81959
+      },
+      "chainBrokenToRecoveringMs": 28,
+      "recoverEventPayload": { "ms": 3199, "devices": 1, "tokens": 1 },
+      "replayEventPayload": { "total": 1, "ms": 41 },
+      "layersReloaded": "[0,28) -- all 28, fresh, from a prior [0,14)",
+      "bytesReloadedMB": 604.1484375,
+      "totalRecoveryWallClockMs": 3199,
+      "tokenIdMatchVsPhase3Golden": {
+        "reference": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+        "observed":  [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+        "match": true,
+        "referenceSource": "docs/gpu-reports/2026-09-10-phase3-qwen3-0.6b-split-golden.json"
+      },
+      "outcome": "Recovered in 3.2 s; the post-recovery answer is token-identical to the pre-existing golden reference for the same fixed prompt, despite the disconnect landing 1 token into the conversation and the entire model being reloaded solo mid-turn."
+    }
+  ],
+  "regressionCheck": "npm test: 181/181 passed (177 baseline + 4 new checkDeviceLost unit tests), both before and after the dead-peer fix.",
+  "selfTestsReconfirmed": {
+    "gpu-test.html": "PASS (all kernels + f32/q8/q4 end-to-end, unchanged by this session's edits)",
+    "gpu-adapter-test.html": "PASS (whole + split vs CPU reference, 1.12e-7 relative max diff, unchanged)"
+  },
+  "notCoveredThisSession": [
+    "Option 2 (3-tab, kill the middle device) -- not attempted; Option 1 passed cleanly on the first fully-instrumented try, and the plan explicitly says to do Option 2 only after that.",
+    "An actual WebGPU device-lost event (as opposed to a peer disconnect) mid-generation -- checkDeviceLost's live trigger path is unexercised; only its pure logic is unit-tested.",
+    "Whether a partial-range-reuse optimization exists for the host's unchanged [0,14) sub-range during a range-grow recovery -- confirmed by direct observation that it does NOT: every recovery in this report reloaded all 28 layers fresh, consistent with room.js dealing whole ranges per device (see IMPLEMENTATION_PLAN.md section 3.4)."
+  ]
+}

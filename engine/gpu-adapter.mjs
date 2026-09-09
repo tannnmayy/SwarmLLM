@@ -24,7 +24,10 @@
 // unmodified, third-party code (see THIRD_PARTY_NOTICES.md).
 
 import { DenseEngine } from "./upstream/dense.js";
-import { parseGGUFHeader, ggufWeights, ggufShardBytes, GGML_F32, GGML_F16, GGML_Q8_0, GGML_Q4_0 } from "./upstream/gguf.js";
+import {
+  parseGGUFHeader, ggufWeights, ggufShardBytes, ggmlLayerNames,
+  GGML_EMBED, GGML_FINAL_NORM, GGML_OUTPUT, GGML_F32, GGML_F16, GGML_Q8_0, GGML_Q4_0,
+} from "./upstream/gguf.js";
 
 const CACHE = "aiswarm-gguf-v1";
 
@@ -62,12 +65,41 @@ export async function acquireDevice({ requireShaderF16 = false } = {}) {
     throw new GpuCapabilityError("no-shader-f16", "This GPU/driver does not support the shader-f16 feature this model requires.");
   }
 
+  // requestDevice() WITHOUT requiredLimits grants only the WebGPU spec's default
+  // per-limit values, not the adapter's actual capability -- and the default
+  // maxStorageBufferBindingSize (128 MiB in Chrome/Dawn) is silently below a real
+  // model's embedding/LM-head tensor (Qwen3 0.6B's is ~148 MB as Q8_0). Binding an
+  // over-limit buffer as a storage buffer fails WebGPU validation, which does NOT
+  // throw a catchable exception -- it fires "uncapturederror" and the dispatch that
+  // referenced the bad bind group silently becomes a no-op. The visible symptom is
+  // not a crash: it is a fully "successful" load followed by all-zero logits, because
+  // storage buffers are zero-initialized and nothing ever wrote to this one. Found by
+  // tracing exactly that failure against a real Qwen3 0.6B run (see git history) --
+  // request the adapter's real limits explicitly so this cannot recur silently.
   let device;
   try {
-    device = await adapter.requestDevice({ requiredFeatures: shaderF16 ? ["shader-f16"] : [] });
+    device = await adapter.requestDevice({
+      requiredFeatures: shaderF16 ? ["shader-f16"] : [],
+      requiredLimits: {
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        maxBufferSize: adapter.limits.maxBufferSize,
+      },
+    });
   } catch (e) {
     throw new GpuCapabilityError("device-error", String(e?.message || e));
   }
+  // Any WebGPU validation error from here on is a bug worth surfacing loudly rather
+  // than a silently-zero buffer; the caller sees it via device.__lastValidationError.
+  device.addEventListener?.("uncapturederror", (e) => { device.__lastValidationError = String(e.error?.message || e.error || e); });
+
+  // A device lost mid-load (typically real memory exhaustion, not the declared API
+  // limit — see the blueprint's "capacity budget" section: the adapter's reported
+  // maxBufferSize is not a promise that much memory is actually free) otherwise
+  // surfaces as a cascade of unrelated-looking Dawn/driver errors on whatever WebGPU
+  // call happens to run next ("Instance dropped", "Failed to allocate ErrorBuffer").
+  // Recording the real reason here is what turns that into an honest, actionable
+  // message instead of a stack trace nobody can act on.
+  device.lost.then((info) => { device.__lost = info; }).catch(() => {});
 
   let info = {};
   try { info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {}); } catch { /* masked */ }
@@ -83,6 +115,35 @@ export async function acquireDevice({ requireShaderF16 = false } = {}) {
       maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
     },
   };
+}
+
+// Same class of problem as explainDeviceLoss() below, for the window AFTER a
+// load already succeeded: acquireDevice() records a lost device on `__lost`, but
+// until now nothing outside GpuEngineAdapter.load()'s own error path ever read it.
+// If the device is lost mid-generation or mid-replay, the failing WebGPU call
+// (writeBuffer/mapAsync/submit) throws whatever confusing Dawn-internal message
+// it throws; GpuEngineAdapter's per-call methods below call this first on any
+// failure so a lost-device error is exposed with the same honesty a load-time
+// loss already gets, without teaching the engine layer to also implement the
+// recovery decision — that stays room.js's job (_stepSafe already catches any
+// _step() failure and calls _recover()).
+export function checkDeviceLost(device) {
+  if (device?.__lost) {
+    const lost = device.__lost;
+    throw new Error(`GPU device lost (${lost.reason || "unknown"}): ${lost.message || "no detail"} — ` +
+      "this worker cannot continue; it must be re-planned around.");
+  }
+}
+
+// Turn a device-lost condition (or a load that threw while the device was already
+// gone) into the blueprint's required wording: "GPU allocation rejected; reducing
+// usable budget..." rather than whatever Dawn-internal error happened to surface.
+function explainDeviceLoss(device, originalError) {
+  const lost = device?.__lost;
+  if (!lost) return originalError;
+  const reason = lost.reason === "destroyed" ? "the device was destroyed" : "the GPU driver reported device loss";
+  return new Error(`GPU allocation rejected while loading: ${reason} (${lost.message || "no further detail"}). ` +
+    "This device pledged more than its GPU could actually hold — lower the capacity budget and try a smaller layer range.");
 }
 
 // Everything else in this module is pure (no fetch, no GPU) and Node-testable —
@@ -219,13 +280,83 @@ async function fetchHeader(url) {
   return parseGGUFHeader(buf, { skipTokenizer: true });
 }
 
+// Fetch and validate a GGUF's header only — no weight bytes, no GPU device. This
+// is what the room calls at join time (before any device is profiled or any
+// layer is assigned) to build the scheduler's model spec and resolve the
+// tokenizer; GpuEngineAdapter.load() calls it too, unless a caller already has
+// the result and passes it in as `opts.preloaded` to avoid a second header fetch.
+export async function probeHeader(descriptor) {
+  if (!descriptor.modelUrl) {
+    throw new Error(`${descriptor.label} has no modelUrl configured yet — it is a roadmap entry, not a loadable model`);
+  }
+  const header = await fetchHeader(descriptor.modelUrl);
+  const cfg = cfgFromGGUFMeta(header, { archHint: descriptor.architecture });
+  validateDescriptor(descriptor, header, cfg);
+  return { header, cfg };
+}
+
+// Real per-layer byte size, summed from the file's own tensor lengths rather than
+// a bytes-per-weight guess: Q8_0/Q4_0 blocks carry scale overhead a naive "bpw"
+// constant misses, and the blueprint is explicit that per-layer cost must come
+// from parsed metadata (section 5.3), not a hardcoded figure. Dense models are
+// uniform across layers (that is the scheduler's own current limitation — see
+// scheduler/plan.js — so layer 0 stands in for all of them here too.
+function layerByteSize(header, layerIndex) {
+  const names = ggmlLayerNames(layerIndex);
+  let total = 0;
+  for (const name of Object.values(names)) {
+    const t = header.tensors[name];
+    if (t) total += t.byteLength; // qNorm/kNorm are Qwen3-only and optional
+  }
+  return total;
+}
+
+// Build the same spec shape scheduler/cost.js's modelSpec() produces for the CPU
+// manifest path, but from real GGUF tensor sizes. This is what lets the existing
+// placement solver, memoryFor()/layerCap()/canHost(), and predict() run unchanged
+// against a Qwen3 GGUF — they only ever read this shape, never a model's engine
+// kind.
+export function modelSpecFromGGUF(header, cfg, descriptor, { maxSeq = 512 } = {}) {
+  const D = cfg.hidden_size;
+  const kvDim = cfg.num_key_value_heads * cfg.head_dim;
+
+  // Same MACs accounting as scheduler/cost.js's modelSpec(): attention over the
+  // KV cache is folded into measured ms/layer rather than modelled here too.
+  const layerMACs = D * D + D * kvDim + D * kvDim + D * D + 3 * D * cfg.intermediate_size;
+  const headMACs = cfg.vocab_size * D;
+
+  const embedTensor = header.tensors[GGML_EMBED];
+  if (!embedTensor) throw new Error(`GGUF file has no ${GGML_EMBED} tensor`);
+  const outputTensor = header.tensors[GGML_OUTPUT];
+
+  return {
+    label: descriptor.label,
+    layers: cfg.num_hidden_layers,
+    hidden: D,
+    maxSeq,
+    precision: `gguf-${descriptor.expectedFormat || "?"}`,
+
+    layerMACs,
+    headMACs,
+    headRatio: headMACs / layerMACs,
+
+    layerBytes: layerByteSize(header, 0),
+    embedBytes: embedTensor.byteLength,
+    kvBytesPerLayer: 2 * maxSeq * kvDim * 4,
+    wireBytes: D * 2,
+    scratchBytes: (cfg.vocab_size + 8 * D + 4 * cfg.intermediate_size) * 4,
+    tiedEmbeddings: !outputTensor,
+  };
+}
+
 export class GpuEngineAdapter {
-  // opts: { layerRange, hasEmbed, hasHead, maxSeq, onProgress, device?, caps? }
+  // opts: { layerRange, hasEmbed, hasHead, maxSeq, onProgress, device?, caps?, preloaded? }
   // A caller may pass an already-acquired `device`/`caps` (e.g. one probed once
-  // at join and reused for every model on that device); otherwise the adapter
-  // acquires its own.
+  // at join and reused for every model on that device), and/or an already-fetched
+  // `preloaded: { header, cfg }` from probeHeader() (e.g. the one room.js fetched
+  // at join to build the scheduler spec) to avoid a second header round trip.
   static async load(descriptor, opts = {}) {
-    const { layerRange, hasEmbed = false, hasHead = false, maxSeq = null, onProgress = null } = opts;
+    const { layerRange, hasEmbed = false, hasHead = false, maxSeq = null, onProgress = null, preloaded = null } = opts;
     let { device, caps } = opts;
     if (!device) {
       const acquired = await acquireDevice({ requireShaderF16: !!descriptor.capabilityRequirements?.shaderF16 });
@@ -233,13 +364,7 @@ export class GpuEngineAdapter {
       caps = acquired.caps;
     }
 
-    if (!descriptor.modelUrl) {
-      throw new Error(`${descriptor.label} has no modelUrl configured yet — it is a roadmap entry, not a loadable model`);
-    }
-
-    const G = await fetchHeader(descriptor.modelUrl);
-    const cfg = cfgFromGGUFMeta(G, { archHint: descriptor.architecture });
-    validateDescriptor(descriptor, G, cfg);
+    const { header: G, cfg } = preloaded || await probeHeader(descriptor);
     const [lo, hi] = validateLayerRange(layerRange, cfg);
 
     let cacheStore = null;
@@ -249,16 +374,22 @@ export class GpuEngineAdapter {
     const total = ggufShardBytes(G, { lo, hi, hasEmbed, hasHead });
     let fetched = 0;
     const tick = () => onProgress && onProgress(total ? fetched / total : 1, fetched, total);
-    const weights = await ggufWeights(G, bytesOf, { lo, hi, hasEmbed, hasHead }, (f) => { fetched = f; tick(); });
 
     const resolvedMaxSeq = maxSeq || descriptor.maxSeqDefault || 512;
 
     device.pushErrorScope?.("out-of-memory");
     let dense;
     try {
+      const weights = await ggufWeights(G, bytesOf, { lo, hi, hasEmbed, hasHead }, (f) => { fetched = f; tick(); });
       dense = await DenseEngine.create({ device, cfg, weights, layerRange: [lo, hi], hasEmbed, hasHead, maxSeq: resolvedMaxSeq });
+    } catch (e) {
+      throw explainDeviceLoss(device, e);
     } finally {
-      const oom = await device.popErrorScope?.();
+      // The device may already be gone by the time we get here (that is exactly
+      // what explainDeviceLoss() above is for), so popErrorScope() itself failing
+      // must not mask the real error with a second, more confusing one.
+      let oom = false;
+      try { oom = await device.popErrorScope?.(); } catch { /* device already lost */ }
       if (oom) throw new Error(`GPU ran out of memory loading ${descriptor.label} layers [${lo}, ${hi}) — this device pledged more than its GPU can hold`);
     }
 
@@ -277,8 +408,17 @@ export class GpuEngineAdapter {
 
   get layerCount() { return this.hi - this.lo; }
   reset() { this.dense.reset(); }
-  async embedRun(tokenId, pos) { return this.dense.embedRun(tokenId, pos); }
-  async runHidden(x, pos) { return this.dense.runHidden(x, pos); }
-  async headFromHidden(x) { return this.dense.headFromHidden(x); }
+  async embedRun(tokenId, pos) {
+    try { return await this.dense.embedRun(tokenId, pos); }
+    catch (e) { checkDeviceLost(this.device); throw e; }
+  }
+  async runHidden(x, pos) {
+    try { return await this.dense.runHidden(x, pos); }
+    catch (e) { checkDeviceLost(this.device); throw e; }
+  }
+  async headFromHidden(x) {
+    try { return await this.dense.headFromHidden(x); }
+    catch (e) { checkDeviceLost(this.device); throw e; }
+  }
   dispose() { this.device?.destroy?.(); }
 }

@@ -33,6 +33,7 @@ export const MODELS = {
     dir: "/models/smollm2-135m",
     layers: 30,
     maxSeqDefault: 512,
+    maxTokensDefault: 60,
     wireDtype: "f32",
     capabilityRequirements: { webgpu: false },
     why: "The working two-device demo: 134 tests, a recorded live run at 4.99 tok/s, " +
@@ -42,20 +43,61 @@ export const MODELS = {
   "qwen3-0.6b": {
     id: "qwen3-0.6b",
     label: "Qwen3 0.6B · Q8_0",
-    status: STATUS.EXPERIMENTAL,
+    // Promoted from EXPERIMENTAL on 2026-09-10 (IMPLEMENTATION_PLAN.md Phase B):
+    // this room's real Q8_0/WebGPU output matched an independent reference
+    // implementation exactly, both on prompt tokenization (36/36 tokens) and on
+    // 12/12 greedy-decoded output tokens. See the `why` field below for the one
+    // caveat worth carrying forward, and
+    // docs/gpu-reports/2026-09-10-phase-b-reference-check.json for full detail.
+    status: STATUS.VERIFIED,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    modelUrl: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
-    configUrl: "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/config.json",
-    tokenizerUrl: "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/main/tokenizer.json",
+    // Served from this host's own static files, not huggingface.co directly. The
+    // blueprint explicitly permits this ("permit a local static mirror for
+    // demos" — section 9): a venue room does not want every device pulling 610 MB
+    // from a remote CDN individually, and a browser sandboxed away from arbitrary
+    // external hosts (as this development environment's preview browser is) can
+    // still range-fetch from same-origin static files. Swap these three URLs back
+    // to the canonical ones below for a deployment whose browsers can reach HF.
+    modelUrl: "/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf",
+    configUrl: "/models/qwen3-0.6b/config.json",
+    tokenizerUrl: "/models/qwen3-0.6b/tokenizer.json",
+    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
     expectedFormat: "Q8_0",
+    // The blueprint's suggested starting range (512-2048), and confirmed to
+    // actually load — solo, all 28 layers plus the LM head, on this hardware —
+    // once engine/gpu-adapter.mjs's acquireDevice() requests real device limits
+    // instead of accepting WebGPU's ~128 MB storage-buffer-binding default. That
+    // default (not this context length) was the cause of an earlier device-lost
+    // crash here; see the comment on requiredLimits in gpu-adapter.mjs.
     maxSeqDefault: 512,
+    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
+    // answers, and 60 tokens routinely cut that block off mid-thought in live
+    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
+    // measurement, not a guess: a live run of "Why is the sky blue? Explain
+    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
+    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
+    // that headroom while still leaving most of the 512-position window free
+    // for the rest of a short conversation.
+    maxTokensDefault: 320,
     wireDtype: "f16",
-    sourceRevision: "not yet fetched in this build — record exact byte length/SHA-256 on first successful load",
+    // Recorded from the real fetch, not guessed: HTTP response headers off
+    // huggingface.co on 2026-09-09 (X-Repo-Commit, X-Linked-Size, X-Linked-ETag),
+    // then independently confirmed by hashing the downloaded file — the local
+    // SHA-256 matches HF's recorded ETag exactly, so the mirror under
+    // models/qwen3-0.6b/ is byte-identical to the published artifact.
+    sourceRevision: "huggingface.co/Qwen/Qwen3-0.6B-GGUF @ 23749fefcc72300e3a2ad315e1317431b06b590a, " +
+      "639446688 bytes, sha256:9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
     minRoomEnvelopeBytes: Math.round(0.8 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
-    why: "First real Qwen/GGUF/WebGPU milestone: 28 dense layers, and the imported " +
-         "DenseEngine already handles Qwen3's QK-norm.",
+    why: "First real Qwen/GGUF/WebGPU milestone: 28 dense layers, the imported " +
+         "DenseEngine already handles Qwen3's QK-norm, a live worker-drop recovery " +
+         "produces a token-identical continuation, and greedy output matches an " +
+         "independent transformers reference exactly for a fixed prompt. One caveat: " +
+         "that reference ran the unquantized (fp32) weights, not a Q8_0-native tool " +
+         "(llama.cpp) — no compiler or llama-cpp-python wheel was available in this " +
+         "environment to run that stronger check. Q8_0 correctness is well-supported " +
+         "but not proven against a quantization-aware reference.",
   },
 
   "qwen3-1.7b": {
@@ -69,12 +111,28 @@ export const MODELS = {
     tokenizerUrl: "https://huggingface.co/Qwen/Qwen3-1.7B/resolve/main/tokenizer.json",
     expectedFormat: "Q8_0",
     maxSeqDefault: 512,
+    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
+    // answers, and 60 tokens routinely cut that block off mid-thought in live
+    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
+    // measurement, not a guess: a live run of "Why is the sky blue? Explain
+    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
+    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
+    // that headroom while still leaving most of the 512-position window free
+    // for the rest of a short conversation.
+    maxTokensDefault: 320,
     wireDtype: "f16",
     sourceRevision: "not yet fetched in this build — record exact byte length/SHA-256 on first successful load",
     minRoomEnvelopeBytes: Math.round(2.0 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
     why: "Same dense code path as 0.6B; the first real multi-device capacity demonstration.",
-    blockedOn: "Qwen3 0.6B must reach Verified first (Phase 6 of the blueprint promotes one rung at a time).",
+    // 0.6B reached Verified on 2026-09-10 (see its own `why` field and
+    // IMPLEMENTATION_PLAN.md Phase B), so the original blocker text here is no
+    // longer true. Left at PLANNED anyway, on purpose: promoting this requires a
+    // new ~2 GB download and its own full verification pass (Phase F) -- a
+    // deliberately separate effort, not something to start as a side effect of
+    // closing Phase B.
+    blockedOn: "Qwen3 0.6B is Verified; this rung has not been started yet — it needs its own " +
+      "download, GGUF probe, and live gate (Phase F of the blueprint promotes one rung at a time).",
   },
 
   "qwen3-4b": {
@@ -88,6 +146,15 @@ export const MODELS = {
     tokenizerUrl: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
     expectedFormat: "Q8_0",
     maxSeqDefault: 512,
+    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
+    // answers, and 60 tokens routinely cut that block off mid-thought in live
+    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
+    // measurement, not a guess: a live run of "Why is the sky blue? Explain
+    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
+    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
+    // that headroom while still leaving most of the 512-position window free
+    // for the rest of a short conversation.
+    maxTokensDefault: 320,
     wireDtype: "f16",
     sourceRevision: "not yet fetched in this build — record exact byte length/SHA-256 on first successful load",
     minRoomEnvelopeBytes: Math.round(4.6 * GB),
@@ -107,6 +174,15 @@ export const MODELS = {
     tokenizerUrl: null,
     expectedFormat: "Q4_0",
     maxSeqDefault: 512,
+    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
+    // answers, and 60 tokens routinely cut that block off mid-thought in live
+    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
+    // measurement, not a guess: a live run of "Why is the sky blue? Explain
+    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
+    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
+    // that headroom while still leaving most of the 512-position window free
+    // for the rest of a short conversation.
+    maxTokensDefault: 320,
     wireDtype: "f16",
     sourceRevision: null,
     minRoomEnvelopeBytes: Math.round(16.5 * GB),

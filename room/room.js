@@ -27,6 +27,7 @@ import { Mesh } from "./mesh.js";
 import { packWire, unpackWire, looksBad, chooseEncoding } from "./wire.js";
 import { argmax } from "../engine/cpu.mjs";
 import { createEngine } from "../engine/factory.mjs";
+import { probeHeader, modelSpecFromGGUF } from "../engine/gpu-adapter.mjs";
 import { Tokenizer } from "../tools/tokenizer.mjs";
 import { modelSpec, plan as solvePlan, compareAll } from "../scheduler/plan.js";
 import { rttLookup } from "../scheduler/cost.js";
@@ -68,6 +69,9 @@ export class Room {
     this.turns = [];              // the conversation, as chat turns
     this.recovering = false;
     this.strategy = "optimal";
+    // Ids the mesh has told us left the chain, checked by _step() before it sends a
+    // frame to `this.next` -- see the comment where it is read for why this exists.
+    this._deadPeers = new Set();
     this._wire();
   }
 
@@ -84,16 +88,48 @@ export class Room {
   get id() { return this.mesh.id; }
   get code() { return this.mesh.room; }
 
-  async join({ pledgeBytes = null } = {}) {
-    const dir = getModel(this.model).dir;
-    const manifest = await (await fetch(dir + "/manifest.json")).json();
-    this.spec = modelSpec(manifest, { precision: "f32", maxSeq: 512 });
+  // Everything that depends on WHICH model this room runs: the scheduler spec
+  // (real GGUF tensor bytes for a GPU model, the manifest for the CPU one), the
+  // tokenizer, and the wire encoding those bytes imply. Used both at join and
+  // when a "deal" message tells a worker the host is running a different model
+  // than the one it assumed (see the "deal" case in _onMsg) — one code path for
+  // both, so there is only one place this can be wrong.
+  async _loadModelSpec(descriptor) {
+    const maxSeq = descriptor.maxSeqDefault || 512;
+    if (descriptor.engineKind === "cpu-smollm") {
+      const manifest = await (await fetch(descriptor.dir + "/manifest.json")).json();
+      this.spec = modelSpec(manifest, { precision: "f32", maxSeq });
+      this.tok = await Tokenizer.load(descriptor.dir + "/tokenizer.json");
+      this._ggufHeader = null; this._ggufCfg = null;
+    } else if (descriptor.engineKind === "dense-gguf") {
+      const { header, cfg } = await probeHeader(descriptor);
+      // Cached so _load() does not pay a second header round trip for the model
+      // it just resolved this very spec from.
+      this._ggufHeader = header; this._ggufCfg = cfg;
+      this.spec = modelSpecFromGGUF(header, cfg, descriptor, { maxSeq });
+      this.tok = await Tokenizer.load(descriptor.tokenizerUrl);
+    } else {
+      throw new Error(`${descriptor.label}: ${descriptor.blockedOn || "not available on this build yet"}`);
+    }
     // f32 on the wire when it costs no extra SCTP slice, so a split answer is
-    // bit-identical to the single-device answer. See room/wire.js.
+    // bit-identical to the single-device answer, for models whose hidden size
+    // allows it; wider models (Qwen3) fall to f16. See room/wire.js.
     this.wireEnc = chooseEncoding(this.spec.hidden);
 
+    // The turn-closing token, from the tokenizer's own special tokens rather than
+    // the engine's cfg: a GGUF header is always fetched with skipTokenizer:true
+    // (see engine/gpu-adapter.mjs's fetchHeader), which drops every
+    // "tokenizer.ggml.*" key including eos_token_id, so engine.cfg.eos is never
+    // populated for a dense-gguf model. Every ChatML model closes a turn with
+    // <|im_end|>, so this is also the model-agnostic answer CpuEngine's manifest
+    // "eos" field was really encoding all along.
+    this.eosId = this.tok.special?.get("<|im_end|>") ?? null;
+  }
+
+  async join({ pledgeBytes = null } = {}) {
+    await this._loadModelSpec(getModel(this.model));
+
     const r = await this.mesh.connect();
-    this.tok = await Tokenizer.load(dir + "/tokenizer.json");
     this._emit("joined", r);
 
     // Measure this device before telling anyone what it is worth. ~300 ms.
@@ -242,7 +278,15 @@ export class Room {
 
       this._emit("chain-broken", id);
       // Fail any lap still in flight straight away rather than waiting out its
-      // timeout -- _stepSafe turns that failure into a recovery.
+      // timeout -- _stepSafe turns that failure into a recovery. This only covers
+      // a lap that happens to be sitting in `this.waiting` at this exact instant,
+      // though: measured live (see IMPLEMENTATION_PLAN.md Phase A), a departure
+      // that lands between two laps -- generation is busy, but no frame is in
+      // flight right now -- fell through this fast path entirely, and the NEXT
+      // _step() call sent its frame to a `this.next` that was already known dead,
+      // paying the full 20 s per-lap timeout before _stepSafe ever saw a failure.
+      // Recording the id here closes that gap; see _step()'s check below.
+      this._deadPeers.add(id);
       for (const [, resolve] of this.waiting) resolve(null);
       this.waiting.clear();
 
@@ -261,11 +305,41 @@ export class Room {
   async _onMsg(from, m) {
     switch (m.t) {
       case "deal": {
+        // The deal names the model the HOST is actually running. A worker that
+        // joined before knowing that (or that was constructed with a stale
+        // default) must adopt it here rather than silently loading its own
+        // assumption — every device in the chain has to agree on one model, or
+        // the wire's hidden-state width and the tokenizer's vocabulary are both
+        // wrong without anything raising an error until logits come out as noise.
+        const modelChanged = m.model !== this.model;
+        if (modelChanged) {
+          let descriptor;
+          try { descriptor = getModel(m.model); }
+          catch (e) { this._emit("error", `host dealt an unknown model "${m.model}": ${e.message}`); break; }
+
+          this._emit("model-changed", { from: this.model, to: m.model });
+          this.model = m.model;
+          try {
+            await this._loadModelSpec(descriptor);
+          } catch (e) {
+            this._emit("error", `could not load model "${m.model}": ${e.message}`);
+            break;
+          }
+          // A model swap invalidates anything held under the old model's shape —
+          // never treat this as "kept range" even if the byte-range numbers
+          // happen to coincide. Dispose here, not just discard: a GpuEngineAdapter
+          // holds real WebGPU buffers, and nothing else will ever call dispose()
+          // on this particular instance once the reference is gone.
+          this.engine?.dispose?.();
+          this.engine = null;
+          this.range = null;
+        }
+
         // A re-deal after a failure usually leaves most devices holding exactly what
         // they held before. Re-downloading those layers would turn a two-second
         // recovery into a thirty-second one, so keep the weights and clear only the
         // cache — the host is about to replay the conversation into it anyway.
-        const same = this.engine && this.range &&
+        const same = !modelChanged && this.engine && this.range &&
           this.range[0] === m.range[0] && this.range[1] === m.range[1];
         this.hostId = m.host;
         this.range = m.range;
@@ -366,6 +440,14 @@ export class Room {
 
   // ---------------------------------------------------------------- loading
   async _load(range, hasEmbed, hasHead) {
+    // Every path that replaces this.engine with a freshly loaded one goes through
+    // here (the deal handler's reload branch, _deal()'s own host-range (re)load,
+    // and any future caller) except the "kept-range" fast path, which intentionally
+    // keeps the same engine/buffers because the layer range did not change — do
+    // not dispose there, it would defeat the point of that optimization. A
+    // GpuEngineAdapter's dispose() destroys its WebGPU device; CpuEngine has no
+    // dispose() at all, hence the optional chain.
+    this.engine?.dispose?.();
     this._emit("loading", { range, pct: 0 });
     const descriptor = getModel(this.model);
     let lastSent = 0;
@@ -373,6 +455,10 @@ export class Room {
       layerRange: range,
       hasEmbed,
       hasHead,
+      // Reuse the header this device already fetched in join() (or in the "deal"
+      // handler, on a model change) instead of range-fetching it a second time —
+      // it describes the same file either way.
+      preloaded: this._ggufHeader ? { header: this._ggufHeader, cfg: this._ggufCfg } : undefined,
       onProgress: (frac) => {
         const pct = Math.round(frac * 100);
         this._emit("loading", { range, pct });
@@ -529,6 +615,7 @@ export class Room {
     this.history = [];
     this.pos = 0;
     this._emit("replaying", { total: hist.length });
+    const t0 = performance.now();
 
     let logits = null;
     for (let i = 0; i < hist.length; i++) {
@@ -539,7 +626,7 @@ export class Room {
         this._emit("replay-progress", { done: i + 1, total: hist.length });
       }
     }
-    this._emit("replayed", { total: hist.length });
+    this._emit("replayed", { total: hist.length, ms: Math.round(performance.now() - t0) });
     return logits;
   }
 
@@ -595,6 +682,13 @@ export class Room {
   async _step(tokenId, pos) {
     let x = await this.engine.embedRun(tokenId, pos);
     if (this.next) {
+      // this.next is only repointed once a re-deal actually runs (inside
+      // _recover()), so a lap that starts after a "left" event for this exact
+      // peer -- but before recovery has had a chance to act -- would otherwise
+      // send into the void and only fail via the 20 s timeout below. Failing it
+      // here instead is what makes recovery start in milliseconds, not seconds,
+      // for that case (see the "left" handler's comment on _deadPeers).
+      if (this._deadPeers.has(this.next)) throw new Error(`${this.next} already left the chain`);
       const t0 = performance.now();
       x = await new Promise((resolve) => {
         this.waiting.set(pos, resolve);
@@ -653,9 +747,14 @@ ${text}<|im_end|>
     return { used: this.pos, limit, frac: this.pos / limit, turns: this.turns.length };
   }
 
-  async generate(text, askedBy = null, { maxTokens = 60 } = {}) {
+  // maxTokens defaults from the model descriptor, not a flat 60: a reasoning
+  // model's <think> block can legitimately run long, and 60 was tuned for
+  // SmolLM2's CPU speed, not for a model that reasons before it answers. An
+  // explicit override still wins, for callers that want one.
+  async generate(text, askedBy = null, { maxTokens = null } = {}) {
     if (this.busy) return;
     if (!this.isHost) { this.mesh.send(this.hostId, { t: "ask", text }); return; }
+    const cap = maxTokens ?? getModel(this.model).maxTokensDefault ?? 60;
 
     // Refuse a question there is no room to answer, rather than starting one and
     // stopping mid-sentence. Sliding the window would mean re-prefilling the whole
@@ -691,9 +790,9 @@ ${text}<|im_end|>
       for (const id of ids) logits = await this._feed(id);
 
       let answer = "";
-      for (let n = 0; n < maxTokens; n++) {
+      for (let n = 0; n < cap; n++) {
         const next = argmax(logits);
-        if (next === this.engine.cfg.eos) break;          // <|im_end|>
+        if (next === this.eosId) break;                    // <|im_end|>
         const piece = this.tok.decode([next]);
         answer += piece;
         this.mesh.broadcast({ t: "token", text: piece });

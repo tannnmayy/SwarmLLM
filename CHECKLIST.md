@@ -49,10 +49,33 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
       loads a real GGUF over a real HTTP range request; whole-model and split across
       two engine instances both match an independent CPU reference to 1.1e-7 relative
       error (`gpu-adapter-test.html`, [report](docs/gpu-reports/2026-09-09-phase2-gpu-adapter-selftest.json)) · **34/34 tests**
-- [ ] **Connect a real Qwen3 0.6B download to the room** — the model ladder registry
-      (`models/registry.mjs`) has the descriptor, but `room.js` does not yet fetch a
-      GGUF, derive a scheduler cost model from it, or offer model selection in the UI.
-      *(this is the actual remaining gap, not "WebGPU" generally)*
+- [x] **Qwen3 0.6B Q8_0 connected end-to-end and Verified** — real 610 MB GGUF
+      downloaded and pinned (SHA-256 verified against Hugging Face's own ETag),
+      `room.js` derives its scheduler spec from real GGUF tensor bytes, model
+      selector in the UI, and a real two-tab WebRTC split (14+14 layers) produces
+      coherent output. Deterministic split-vs-solo greedy decode is token-for-token
+      identical ([report](docs/gpu-reports/2026-09-10-phase3-qwen3-0.6b-split-golden.json)).
+      Two real bugs found and fixed along the way: a missing `requiredLimits` request
+      on the WebGPU device (silently zeroed the LM head's output for any tensor over
+      WebGPU's ~128 MB default storage-buffer-binding limit) and EOS detection (GGUF
+      header parsing always drops `tokenizer.ggml.eos_token_id`, so generation never
+      stopped at `<|im_end|>` — now derived from the tokenizer's own special tokens).
+      A worker-drop recovery mid-conversation also produces token-identical output
+      (see the Phase A entry above). **Promoted to Verified**: greedy output matches
+      an independent transformers reference (Qwen/Qwen3-0.6B, fp32) exactly — 36/36
+      prompt tokens and 12/12 generated tokens — for a fixed prompt
+      ([report](docs/gpu-reports/2026-09-10-phase-b-reference-check.json)). Caveat
+      carried into the registry's `why` field: that reference is unquantized, not a
+      Q8_0-native tool like llama.cpp, which no compiler or wheel in this
+      environment could run.
+- [x] Per-model generation length, calibrated against a live measurement — Qwen3
+      reasons in a `<think>` block before answering, and the old flat 60-token cap
+      (tuned for SmolLM2's CPU speed) cut that block off mid-thought every time.
+      A live run of "Why is the sky blue? Explain briefly." needed 275 tokens for
+      a complete think-plus-answer turn ending naturally at `<|im_end|>`; the new
+      per-descriptor `maxTokensDefault` (320 for the Qwen3 family) was set from
+      that number, not a guess, and re-verified live to produce the same complete,
+      untruncated answer using the registry default with no override.
 - [ ] Batched prefill *(token-by-token today; ~3–4 h)*
 - [ ] Larger models fetched and tested (Qwen3 0.6B / 1.7B) *(~1–2 h)*
 - [x] Weight caching in the Cache API — byte-length checked against the manifest,
@@ -103,7 +126,12 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
 ## 5. Recovery — the H22–30 checkpoint
 
 - [x] Detect a peer leaving mid-generation, and fail the in-flight lap at once
-      rather than waiting out its timeout
+      rather than waiting out its timeout. **Fixed a real gap in this, found by
+      live GPU testing:** the fast path only covered a lap already in flight the
+      instant the peer left — a lap sent afterward, to a `next` not yet
+      repointed, fell through to a plain 20 s timeout. A `_deadPeers` check in
+      `_step()` closes it; live-verified the chain-broken→recovering gap drop
+      from 20037 ms to 28 ms (see the Phase A report below).
 - [x] Re-plan over the survivors — including devices the planner had stood down,
       which get recruited back when they are suddenly needed
 - [x] Re-deal the orphaned layer range
@@ -117,11 +145,21 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
       disconnect takes, so the rehearsed version is the real one
 - [x] **12/12 recovery tests** — the answer is byte-identical to the
       uninterrupted run after the middle device leaves, and after the last one does
-- [x] **Gate met live:** dropped a worker 58 tokens into an answer; the room
-      recruited the stood-down spare, replayed 58 tokens, recovered in **13.1 s**
-      and finished the sentence it was in the middle of
-- [ ] Spare layer copies for instant failover *(stretch; would cut the 13 s to
-      near zero by keeping a warm replica)*
+- [x] **Gate met live (CPU/SmolLM2):** dropped a worker 58 tokens into an answer;
+      the room recruited the stood-down spare, replayed 58 tokens, recovered in
+      **13.1 s** and finished the sentence it was in the middle of
+- [x] **Gate met live on the GPU path too (Qwen3 0.6B, real WebGPU, real
+      WebRTC):** dropped the sole worker out of a 14+14 split; the room fell
+      back to solo, reloaded the full 610 MB model, replayed history, and
+      resumed — producing output **token-identical** to the Phase 3 golden
+      reference for the same prompt, in as little as **3.2 s** once the dead-peer
+      fast-fail fix above landed. Also fixed a GPU buffer leak: `room.js` never
+      called `GpuEngineAdapter.dispose()` before replacing a superseded engine,
+      so a WebGPU device was never released across a reload — now disposed in
+      `_load()` and the model-change branch of the `deal` handler.
+      ([report](docs/gpu-reports/2026-09-10-phase-a-gpu-recovery.json))
+- [ ] Spare layer copies for instant failover *(stretch; would cut recovery time
+      further by keeping a warm replica)*
 - [ ] Host loss *(unrecoverable by design today: the conversation, tokenizer and
       LM head all live on the host. Reported clearly rather than hung)*
 

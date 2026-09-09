@@ -1,0 +1,15 @@
+{
+  "t": "2026-09-10T01:10:00Z",
+  "model": "qwen3-0.6b",
+  "modelFile": "models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf",
+  "sourceRevision": "huggingface.co/Qwen/Qwen3-0.6B-GGUF @ 23749fefcc72300e3a2ad315e1317431b06b590a, 639446688 bytes, sha256:9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+  "gpu": { "vendor": "amd", "architecture": "gcn-5" },
+  "prompt": "<|im_start|>system\nYou are a helpful AI assistant running across several devices at once.<|im_end|>\n<|im_start|>user\nThe sky is blue and the grass is green.<|im_end|>\n<|im_start|>assistant\n",
+  "sampler": "greedy (argmax)",
+  "generatedTokens": 12,
+  "solo": { "layerRange": [0, 28], "devices": 1, "tokenIds": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303] },
+  "split": { "layerRanges": [[0, 14], [14, 28]], "devices": 2, "tokenIds": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303] },
+  "tokenIdsMatch": true,
+  "decoded": "<think>\nOkay, the user mentioned that the sky is blue",
+  "note": "Solo and split used separate WebGPU device acquisitions (two acquireDevice() calls), standing in for two physically separate browsers the way engine/gpu-adapter.mjs and the live two-tab WebRTC room test both do. This is a deterministic greedy-decode comparison, not a comparison against an external reference implementation (llama.cpp/transformers) -- that cross-implementation check has not been done. The two known bugs this session found and fixed before this test could pass are recorded in engine/gpu-adapter.mjs's acquireDevice() (missing requiredLimits) and room/room.js's _loadModelSpec()/eosId (GGUF header parsing always drops tokenizer.* keys)."
+}

@@ -1,0 +1,35 @@
+{
+  "t": "2026-09-10T02:30:00Z",
+  "phase": "B — external reference cross-check",
+  "model": "qwen3-0.6b",
+  "modelFileUnderTest": "models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf (via engine/gpu-adapter.mjs -> DenseEngine, real WebGPU)",
+  "referenceImplementation": {
+    "tool": "transformers.AutoModelForCausalLM",
+    "transformersVersion": "5.4.0",
+    "torchVersion": "2.13.0+cpu",
+    "modelId": "Qwen/Qwen3-0.6B",
+    "dtype": "float32 (unquantized -- this is the tier-3 fallback from IMPLEMENTATION_PLAN.md Step B.1, used because neither llama.cpp nor llama-cpp-python could be obtained in this environment: no C/C++ compiler is present (no cl.exe/gcc/g++/clang) and no prebuilt llama-cpp-python wheel exists on PyPI for this platform/Python combination -- confirmed via `pip install --dry-run --only-binary=:all: llama-cpp-python`, which found no matching distribution)."
+  },
+  "environmentNote": "This is real evidence, not a hypothetical: a CPU-only PyTorch + transformers install was performed live in this session (pip install torch --index-url https://download.pytorch.org/whl/cpu, then transformers/accelerate) and the actual, real Qwen/Qwen3-0.6B unquantized weights were downloaded from Hugging Face and run.",
+  "prompt": "<|im_start|>system\nYou are a helpful AI assistant running across several devices at once.<|im_end|>\n<|im_start|>user\nThe sky is blue and the grass is green.<|im_end|>\n<|im_start|>assistant\n",
+  "promptEncoding": {
+    "method": "tokenizer.encode(prompt, add_special_tokens=False) -- literal BPE encode of the raw ChatML string, no chat template applied, matching exactly how tools/tokenizer.mjs's Tokenizer.encode() works and how room.js's _turnPrompt()+tok.encode() constructs a turn.",
+    "roomTokenIds": "identical to referenceTokenIds below (this project's tools/tokenizer.mjs and HF's AutoTokenizer for Qwen/Qwen3-0.6B produced byte-identical token IDs for the full 36-token prompt)",
+    "referenceTokenIds": [151644, 8948, 198, 2610, 525, 264, 10950, 15235, 17847, 4303, 3941, 3807, 7611, 518, 3055, 13, 151645, 198, 151644, 872, 198, 785, 12884, 374, 6303, 323, 279, 16359, 374, 6176, 13, 151645, 198, 151644, 77091, 198]
+  },
+  "generation": {
+    "sampler": "greedy (argmax)",
+    "n": 12,
+    "roomGpuGeneratedTokenIds": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+    "referenceGeneratedTokenIds": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+    "match": true,
+    "decoded": "<think>\nOkay, the user mentioned that the sky is blue"
+  },
+  "roomTokenSource": "docs/gpu-reports/2026-09-10-phase3-qwen3-0.6b-split-golden.json (solo and split, both already proven internally consistent; this report cross-checks that same output against an independent implementation)",
+  "verdict": {
+    "promptTokenizationMatch": true,
+    "generatedTokenIdMatch": true,
+    "interpretation": "Exact match on both prompt tokenization (36/36 tokens) and 12/12 greedy-decoded output tokens between this project's real Q8_0 GGUF / WebGPU pipeline and an independent, unquantized (fp32) Hugging Face transformers reference. This is strong evidence for: (1) tools/tokenizer.mjs's GPT-2-style pre-tokenizer regex produces correct splits for this prompt despite not being Qwen's own regex (the exact caveat flagged in IMPLEMENTATION_PLAN.md section 2.3 -- resolved for prompts of this shape: plain English, no digits, no unusual whitespace), (2) the DenseEngine/gpu-adapter.mjs computation (RMSNorm, QK-norm, RoPE, attention, SwiGLU, tied LM head) is architecturally correct end to end, and (3) Q8_0 quantization did not shift a single greedy argmax decision across 12 tokens relative to fp32 for this prompt. It does NOT by itself prove Q8_0 quantization is bit-identical to a quantization-aware reference (llama.cpp) in general -- that specific check remains unavailable in this environment (see environmentNote) and should be re-attempted wherever a compiler or a llama-cpp-python wheel is available.",
+    "registryStatusChange": "models/registry.mjs: qwen3-0.6b status changed from EXPERIMENTAL to VERIFIED, per IMPLEMENTATION_PLAN.md section 5.5's exit gate ('an exact token-ID match against a named, versioned reference implementation'). The fp32-vs-Q8_0 caveat above is carried into the registry's own `why` field rather than hidden."
+  }
+}

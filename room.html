@@ -85,7 +85,11 @@
     <input type="text" id="room" placeholder="code" maxlength="8" style="max-width:100px;text-transform:uppercase">
     <button id="go">Join</button>
   </div>
-  <div class="dim" style="font-size:11px;margin-top:8px">Leave the code blank to open a new room.</div>
+  <div class="bar" style="margin-top:8px">
+    <select id="model" style="flex:1"></select>
+  </div>
+  <div class="dim" style="font-size:11px;margin-top:8px" id="modelWhy"></div>
+  <div class="dim" style="font-size:11px;margin-top:4px">Leave the code blank to open a new room. Opening a join link picks the model for you.</div>
 </div>
 
 <div class="card hide" id="roomCard">
@@ -132,7 +136,7 @@
 </div>
 
 <div class="card hide" id="chatCard">
-  <h2>Conversation <span id="model" class="dim"></span></h2>
+  <h2>Conversation <span id="activeModel" class="dim"></span></h2>
   <div id="chat"></div>
   <div class="bar" style="margin-top:10px">
     <input type="text" id="ask" placeholder="ask the swarm something" autocomplete="off">
@@ -157,6 +161,7 @@
 
 <script type="module">
 import { Room, MODELS } from "./room/room.js";
+import { availableModels } from "./models/registry.mjs";
 
 const $ = (id) => document.getElementById(id);
 const show = (id, on = true) => $(id).classList.toggle("hide", !on);
@@ -174,6 +179,41 @@ $("room").value = (hash.get("r") || "").toUpperCase();
 $("name").value = localStorage.getItem("swarm-name") ||
   (/Android/i.test(navigator.userAgent) ? "Android" :
    /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "PC");
+
+// Model selector: status tags follow the blueprint's tiers (verified / experimental
+// / planned / unavailable-on-this-device) rather than presenting every descriptor
+// as equally ready. A join link carries the model in its hash, so following one
+// picks it for you — the dropdown only matters for the device that starts the room.
+const STATUS_LABEL = { verified: "verified", experimental: "experimental", planned: "planned", unavailable: "unavailable" };
+function renderModelOptions(caps) {
+  const wanted = hash.get("model") || $("model").value || "smollm2-135m";
+  $("model").innerHTML = "";
+  for (const m of availableModels(caps)) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = `${m.label} — ${STATUS_LABEL[m.effectiveStatus]}`;
+    opt.disabled = m.effectiveStatus === "unavailable" || m.effectiveStatus === "planned";
+    $("model").appendChild(opt);
+  }
+  if ([...$("model").options].some((o) => o.value === wanted && !o.disabled)) $("model").value = wanted;
+  updateModelWhy();
+}
+function updateModelWhy() {
+  const id = $("model").value;
+  const m = availableModels(lastCaps).find((x) => x.id === id);
+  $("modelWhy").textContent = m ? (m.unavailableReason ? "Unavailable: " + m.unavailableReason : m.blockedOn ? "Blocked on: " + m.blockedOn : m.why || "") : "";
+}
+let lastCaps = { webgpu: typeof navigator !== "undefined" && !!navigator.gpu };
+renderModelOptions(lastCaps);
+$("model").onchange = updateModelWhy;
+// Refine with the real shader-f16 capability once an adapter request resolves,
+// without blocking the initial render on a GPU round trip.
+if (navigator.gpu) {
+  navigator.gpu.requestAdapter().then((a) => {
+    lastCaps = { webgpu: !!a, shaderF16: a ? a.features.has("shader-f16") : false };
+    renderModelOptions(lastCaps);
+  }).catch(() => {});
+}
 
 let room = null, myRange = null, answerEl = null, predicted = null;
 const rangeOf = new Map();
@@ -251,16 +291,21 @@ async function join() {
   const code = ($("room").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "") ||
     Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
   const name = $("name").value.trim() || "device";
+  const model = $("model").value || "smollm2-135m";
   localStorage.setItem("swarm-name", name);
   $("go").disabled = true;
 
-  room = new Room({ code, name });
+  room = new Room({ code, name, model });
+  // Module scope hides `room` from the console otherwise; a support report or a
+  // recovery-correctness check (compare token IDs before/after a kill — see
+  // IMPLEMENTATION_PLAN.md's Phase A) needs to read room.history/room.stats live.
+  window.__room = room;
 
   room.on("roster", () => { renderDevices(); refreshCompare(); });
   room.on("peer-left", (id, why) => { rangeOf.delete(id); droppedIds.delete(id); log("device left: " + why, "warn"); renderDevices(); refreshCompare(); });
   room.on("chain-broken", () => {
     log("CHAIN BROKEN — a device in the pipeline left mid-answer", "bad");
-    bubble("q", "swarm", "A device left the chain mid-answer. Recovery is the next thing we build.");
+    bubble("q", "swarm", "A device left the chain mid-answer. Recovering…");
   });
 
   room.on("profiling", () => { $("myspeed").textContent = "measuring…"; });
@@ -330,7 +375,7 @@ async function join() {
     show("loadBar", false); show("loadTxt", false);
     show("chatCard", true); show("statCard", true); show("reset", true);
     show("kill", room.isHost && room.chain.length > 0);
-    $("model").textContent = MODELS[room.model].label;
+    $("activeModel").textContent = MODELS[room.model].label;
     $("s-dev").textContent = (room.chain?.length || 0) + 1;
     log("swarm online", "ok");
   });
@@ -423,8 +468,9 @@ async function join() {
     $("code").textContent = code2;
     $("sig").textContent = "connected";
     $("sig").className = "ok";
-    location.hash = "r=" + code2;
-    $("joinurl").textContent = "join link: " + location.origin + location.pathname + "#r=" + code2;
+    const hashOut = "r=" + code2 + (model === "smollm2-135m" ? "" : "&model=" + model);
+    location.hash = hashOut;
+    $("joinurl").textContent = "join link: " + location.origin + location.pathname + "#" + hashOut;
     show("joinCard", false); show("roomCard", true); show("devCard", true);
     log("joined room " + code2, "ok");
     renderDevices();
