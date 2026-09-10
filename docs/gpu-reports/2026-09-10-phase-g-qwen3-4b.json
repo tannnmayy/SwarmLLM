@@ -1,0 +1,81 @@
+{
+  "t": "2026-09-10T06:10:00Z",
+  "phase": "G — promote Qwen3 4B",
+  "model": "qwen3-4b",
+  "verdict": "PARTIAL. Everything that can be checked without more GPU memory passed: byte-verified download, header/config/registry cross-check, and — importantly — the kernels are proven correct at this model's dimensions. The full model does NOT run on this machine: it allocates, then loses the GPU device on the first inference pass. Registry left at EXPERIMENTAL. The live gate needs a second physical device.",
+  "gpu": { "vendor": "amd", "architecture": "gcn-5", "shaderF16": true, "maxBufferSize": 2147483648, "maxStorageBufferBindingSize": 2147483644 },
+
+  "provenance": {
+    "upstream": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
+    "repoCommit": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+    "bytes": 4280404704,
+    "sha256": "8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300",
+    "verification": "HF's X-Linked-ETag read before download, local file hashed after. Byte length and SHA-256 both match exactly."
+  },
+
+  "shape": { "layers": 36, "hidden": 2560, "intermediate": 9728, "attentionHeads": 32, "kvHeads": 8, "headDim": 128, "vocab": 151936, "tiedEmbeddings": true },
+
+  "gate1_headerProbe": {
+    "tool": "node tools/probe-gguf.mjs qwen3-4b",
+    "result": "21 passed, 0 failed",
+    "note": "GGUF header, the model's published config.json, and models/registry.mjs agree on every field the engine depends on.",
+    "byteAccounting": "4076.4 MB of the 4082.1 MB file = 99.9%",
+    "capacityEnvelope": {
+      "layerBytesMB": 102.3, "embedBytesMB": 394.1,
+      "soloMB": 4221.2,
+      "twoWayEvenSplit": { "hostMB": 2308.1, "workerMB": 1914.0 },
+      "threeWayEvenSplit": { "hostMB": 1670.4, "workerMB": 1276.2 }
+    }
+  },
+
+  "gate2_soloLoad": {
+    "attempted": [0, 36],
+    "loadedMB": 4076.4,
+    "loadOutcome": "SUCCEEDED — all 36 layers plus the tied embedding table were allocated. Notably higher than the ~1.9 GB previously assumed to be this GPU's ceiling.",
+    "loadNote": "Slow and hostile to the tab: the fetch/stage phase pinned the main thread hard enough that a trivial `window.x` read timed out at 45 s more than once. Weights are staged into CPU memory in full before upload, so a 4.2 GB model needs 4.2 GB of tab RAM as well as GPU memory.",
+    "inferenceOutcome": "FAILED — the GPU device was lost on the first inference pass.",
+    "deviceLost": { "reason": "unknown", "message": "A valid external Instance reference no longer exists." },
+    "uncapturedValidationError": null,
+    "surfacedAs": "GPU device lost (unknown): A valid external Instance reference no longer exists. — this worker cannot continue; it must be re-planned around.",
+    "interpretation": "Not the Bug 1 class (no validation error was recorded, and the buffers were not silently zeroed). This is real device loss under memory pressure: the adapter will hand out 4 GB of buffers and the driver then dies trying to actually run over them. Exactly the case acquireDevice()'s own comment warns about -- the adapter's reported limits are not a promise that much memory is free."
+  },
+
+  "gate3_kernelsAreCorrectAtThisScale": {
+    "why": "A full-model failure alone cannot distinguish 'this model is too big for this GPU' from 'this model is broken in our engine at hidden=2560'. This test separates them.",
+    "attempted": [0, 18],
+    "hasEmbed": true, "hasHead": false, "maxSeq": 64,
+    "loadedMB": 2235.3,
+    "ms": 29856,
+    "outcome": "PASSED — loaded and ran. embedRun() returned a hidden state of length 2560 (correct for this model), every value finite, all 2560 values non-zero, and a second successive call also succeeded.",
+    "conclusion": "The engine, the Q8_0 dequantization, and the WGSL kernels are correct at 4B's dimensions (hidden 2560, 32 query heads over 8 KV heads). The full-model failure is a capacity ceiling on this specific GPU, not a correctness or shape bug."
+  },
+
+  "measuredCeilingOnThisGpu": {
+    "ran": [
+      { "what": "Qwen3 1.7B solo, 28 layers + embed", "mb": 1856 },
+      { "what": "Qwen3 4B half, 18 of 36 layers + embed", "mb": 2235.3 }
+    ],
+    "allocatedButDiedOnInference": [
+      { "what": "Qwen3 4B solo, 36 layers + embed", "mb": 4076.4 }
+    ],
+    "practicalCeiling": "somewhere at or above 2235 MB and below 4076 MB on this AMD gcn-5 adapter"
+  },
+
+  "whyASingleMachineCannotCloseThisPhase": "Every 'device' used in this session's split tests is a browser context on ONE physical GPU. Splitting 4B across two or three contexts does not reduce the total GPU memory required -- it is ~4.2 GB either way, which is above the ceiling measured above. So no split arrangement on this machine can run 4B. This is not a limitation of the scheduler or the room; it is arithmetic.",
+
+  "whatWouldCloseIt": {
+    "requirement": "Two genuinely separate physical devices, each with its own GPU.",
+    "budget": "A 2-way even split needs ~2308 MB on the host (it carries the 394 MB tied embedding table) and ~1914 MB on the worker. Both figures sit near the 2235 MB footprint this GPU has already run successfully, so a pair of comparable machines should manage it.",
+    "note": "This is the first rung where the product claim stops being a demonstration and becomes the only way to run the model at all -- which makes it the most valuable rung to show, and the one that most needs real hardware.",
+    "threeDeviceTarget": "The blueprint treats a genuine 3-device test as required for this phase's exit gate, not optional. That needs three physical devices: ~1670 MB host, ~1276 MB per worker."
+  },
+
+  "stillOpenForThisModel": [
+    "One-device deterministic golden — cannot be produced here; the device dies before any token is generated.",
+    "Two-device split equivalence, live room run, and worker-loss recovery — all need a second physical GPU.",
+    "External reference cross-check against transformers — deliberately not run. There is no room-side output to compare it against yet, so it would prove nothing about this project.",
+    "Three-device capacity demonstration — the blueprint's stated exit gate for this rung."
+  ],
+
+  "registryStatus": "EXPERIMENTAL. The loader and engine can be tried and the kernels are proven correct at this scale, but there is no recorded end-to-end generation, so it does not meet this project's own definition of Verified."
+}

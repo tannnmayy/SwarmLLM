@@ -66,6 +66,26 @@ console.log("\nmodel registry");
      MODELS["smollm2-135m"].maxTokensDefault === 60);
   ok("every dense-gguf Qwen3 descriptor sets a generation cap higher than 60",
      ["qwen3-0.6b", "qwen3-1.7b", "qwen3-4b"].every((id) => MODELS[id].maxTokensDefault > 60));
+
+  // Phase F: 1.7B passed the same full gate 0.6B did.
+  ok("qwen3-1.7b is verified (full Phase F gate, incl. an external reference match)",
+     MODELS["qwen3-1.7b"].status === STATUS.VERIFIED);
+  ok("qwen3-1.7b points at a local mirror, not a remote CDN, like 0.6B does",
+     MODELS["qwen3-1.7b"].modelUrl.startsWith("/models/"));
+  ok("qwen3-1.7b records a real byte length and sha256, not a placeholder",
+     /\d{9,}\s*bytes/.test(MODELS["qwen3-1.7b"].sourceRevision) &&
+     /sha256:[0-9a-f]{64}/.test(MODELS["qwen3-1.7b"].sourceRevision));
+
+  // Guards a bug fixed on 2026-09-10: qwen3-0.6b declared wireDtype "f16" when
+  // room.js actually sends f32 for hidden=1024. Nothing reads the field, so the
+  // error was invisible -- and it inverted the stated reason 0.6B's split output
+  // is bit-identical to its solo output. tools/probe-gguf.mjs checks the declared
+  // value against chooseEncoding() for real model files; this pins the one whose
+  // value was wrong. See docs/gpu-reports/2026-09-10-phase-f-qwen3-1.7b.json.
+  ok("qwen3-0.6b declares the f32 wire it actually uses (hidden 1024 fits one slice)",
+     MODELS["qwen3-0.6b"].wireDtype === "f32");
+  ok("qwen3-1.7b declares the lossy f16 wire it actually uses (hidden 2048)",
+     MODELS["qwen3-1.7b"].wireDtype === "f16");
 }
 
 // ---------------------------------------------------------------- GGUF metadata mapping

@@ -70,16 +70,15 @@ export const MODELS = {
     // instead of accepting WebGPU's ~128 MB storage-buffer-binding default. That
     // default (not this context length) was the cause of an earlier device-lost
     // crash here; see the comment on requiredLimits in gpu-adapter.mjs.
-    maxSeqDefault: 512,
-    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
-    // answers, and 60 tokens routinely cut that block off mid-thought in live
-    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
-    // measurement, not a guess: a live run of "Why is the sky blue? Explain
-    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
-    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
-    // that headroom while still leaving most of the 512-position window free
-    // for the rest of a short conversation.
-    maxTokensDefault: 320,
+    maxSeqDefault: 2048,
+    // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
+    // whole thought plus the answer after it or the turn dies mid-sentence.
+    // Measured, not guessed: 0.6B needed 275 tokens to finish "Why is the sky blue?
+    // Explain briefly." (60 and 220 both cut it off), and 1.7B was still inside its
+    // <think> block at 320. 640 clears both with room to spare, and against the
+    // 2048-position window above still leaves ~1400 positions for follow-up turns.
+    // room.js lowers this further, per turn, when less context than that remains.
+    maxTokensDefault: 640,
     // Derived, not chosen: room.js sets its wire encoding from
     // chooseEncoding(spec.hidden), never from this field. At hidden=1024 a f32
     // hidden state still fits in one SCTP slice, so this model rides the wire
@@ -96,7 +95,10 @@ export const MODELS = {
     // models/qwen3-0.6b/ is byte-identical to the published artifact.
     sourceRevision: "huggingface.co/Qwen/Qwen3-0.6B-GGUF @ 23749fefcc72300e3a2ad315e1317431b06b590a, " +
       "639446688 bytes, sha256:9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
-    minRoomEnvelopeBytes: Math.round(0.8 * GB),
+    // Sized against the real solo cost at this model's default window (1053 MB at
+    // maxSeq 2048), with headroom. tools/probe-gguf.mjs fails if this drops below
+    // the real figure, which is how the 512 -> 2048 change was caught.
+    minRoomEnvelopeBytes: Math.round(1.2 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
     why: "First real Qwen/GGUF/WebGPU milestone: 28 dense layers, the imported " +
          "DenseEngine already handles Qwen3's QK-norm, a live worker-drop recovery " +
@@ -111,7 +113,13 @@ export const MODELS = {
   "qwen3-1.7b": {
     id: "qwen3-1.7b",
     label: "Qwen3 1.7B · Q8_0",
-    status: STATUS.EXPERIMENTAL,
+    // Promoted 2026-09-10 (IMPLEMENTATION_PLAN.md Phase F) after the full gate:
+    // byte-verified download, header probe against config.json, adapter self-test,
+    // one-device golden, split equivalence, a live two-device WebRTC room with
+    // range-only downloads, worker-loss recovery, and an exact token-ID match
+    // against an independent transformers reference.
+    // docs/gpu-reports/2026-09-10-phase-f-qwen3-1.7b.json
+    status: STATUS.VERIFIED,
     engineKind: "dense-gguf",
     architecture: "qwen3",
     // Local mirror, same reasoning as 0.6B above: a room full of devices should
@@ -121,16 +129,15 @@ export const MODELS = {
     tokenizerUrl: "/models/qwen3-1.7b/tokenizer.json",
     upstreamUrl: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
     expectedFormat: "Q8_0",
-    maxSeqDefault: 512,
-    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
-    // answers, and 60 tokens routinely cut that block off mid-thought in live
-    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
-    // measurement, not a guess: a live run of "Why is the sky blue? Explain
-    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
-    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
-    // that headroom while still leaving most of the 512-position window free
-    // for the rest of a short conversation.
-    maxTokensDefault: 320,
+    maxSeqDefault: 2048,
+    // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
+    // whole thought plus the answer after it or the turn dies mid-sentence.
+    // Measured, not guessed: 0.6B needed 275 tokens to finish "Why is the sky blue?
+    // Explain briefly." (60 and 220 both cut it off), and 1.7B was still inside its
+    // <think> block at 320. 640 clears both with room to spare, and against the
+    // 2048-position window above still leaves ~1400 positions for follow-up turns.
+    // room.js lowers this further, per turn, when less context than that remains.
+    maxTokensDefault: 640,
     // Derived from chooseEncoding(2048), not chosen here. Unlike 0.6B, this model
     // is wide enough that an f32 hidden state would cost a second SCTP slice per
     // hop, so it rides the wire as LOSSY f16 -- which means split-vs-solo output
@@ -143,41 +150,55 @@ export const MODELS = {
     // published artifact.
     sourceRevision: "huggingface.co/Qwen/Qwen3-1.7B-GGUF @ 90862c4b9d2787eaed51d12237eafdfe7c5f6077, " +
       "1834426016 bytes, sha256:061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
-    minRoomEnvelopeBytes: Math.round(2.1 * GB),
+    // Real solo cost is 2193 MB at maxSeq 2048; this carries headroom above it.
+    minRoomEnvelopeBytes: Math.round(2.4 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
-    why: "Same dense code path as 0.6B, twice as wide (hidden 2048, 28 layers). The first " +
-         "rung where one mid-range GPU cannot comfortably hold the whole model, so the " +
-         "capacity-through-more-devices claim is doing real work rather than being optional.",
-    blockedOn: "Qwen3 0.6B is Verified; this rung has not been started yet — it needs its own " +
-      "download, GGUF probe, and live gate (Phase F of the blueprint promotes one rung at a time).",
+    why: "Same dense code path as 0.6B, twice as wide (hidden 2048, 28 layers). Greedy " +
+         "output matches an independent transformers reference exactly, and a live " +
+         "two-device split survives losing a worker mid-answer. Two caveats worth " +
+         "knowing: the reference was unquantized fp32, not a Q8_0-native tool; and this " +
+         "is the first rung whose hidden state crosses the wire as LOSSY f16, so its " +
+         "split-vs-solo token equality is a measured result rather than a guarantee.",
   },
 
   "qwen3-4b": {
     id: "qwen3-4b",
     label: "Qwen3 4B · Q8_0",
-    status: STATUS.PLANNED,
+    status: STATUS.EXPERIMENTAL,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    modelUrl: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
-    configUrl: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/config.json",
-    tokenizerUrl: "https://huggingface.co/Qwen/Qwen3-4B/resolve/main/tokenizer.json",
+    modelUrl: "/models/qwen3-4b/Qwen3-4B-Q8_0.gguf",
+    configUrl: "/models/qwen3-4b/config.json",
+    tokenizerUrl: "/models/qwen3-4b/tokenizer.json",
+    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
     expectedFormat: "Q8_0",
-    maxSeqDefault: 512,
-    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
-    // answers, and 60 tokens routinely cut that block off mid-thought in live
-    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
-    // measurement, not a guess: a live run of "Why is the sky blue? Explain
-    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
-    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
-    // that headroom while still leaving most of the 512-position window free
-    // for the rest of a short conversation.
-    maxTokensDefault: 320,
+    maxSeqDefault: 2048,
+    // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
+    // whole thought plus the answer after it or the turn dies mid-sentence.
+    // Measured, not guessed: 0.6B needed 275 tokens to finish "Why is the sky blue?
+    // Explain briefly." (60 and 220 both cut it off), and 1.7B was still inside its
+    // <think> block at 320. 640 clears both with room to spare, and against the
+    // 2048-position window above still leaves ~1400 positions for follow-up turns.
+    // room.js lowers this further, per turn, when less context than that remains.
+    maxTokensDefault: 640,
     wireDtype: "f16",
-    sourceRevision: "not yet fetched in this build — record exact byte length/SHA-256 on first successful load",
+    // Recorded from the real fetch on 2026-09-10 and confirmed by hashing the
+    // downloaded file against HF's X-Linked-ETag.
+    sourceRevision: "huggingface.co/Qwen/Qwen3-4B-GGUF @ bc640142c66e1fdd12af0bd68f40445458f3869b, " +
+      "4280404704 bytes, sha256:8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300",
     minRoomEnvelopeBytes: Math.round(4.6 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
-    why: "Still dense; 36 layers. A scale-up of the same runtime, not a new architecture.",
-    blockedOn: "Qwen3 1.7B must reach Verified first.",
+    why: "Still dense, but 36 layers at hidden 2560 — about 4.2 GB to hold. This is the rung " +
+         "where one mid-range GPU stops being able to run the model alone, so a split is no " +
+         "longer a demonstration of the idea but the only way to run it at all. The kernels " +
+         "are proven correct at this model's dimensions (half the model, 2235 MB, loads and " +
+         "computes finite non-zero hidden states); what is missing is memory, not correctness.",
+    blockedOn: "Needs a second physical GPU. On the one machine tested so far the full model " +
+      "allocates (4076 MB) and then loses the device on the first inference pass — and because " +
+      "every 'device' in a single-machine test shares that one GPU, no split arrangement avoids " +
+      "the ~4.2 GB total. A 2-way split needs ~2308 MB (host) + ~1914 MB (worker), both close to " +
+      "the 2235 MB this GPU has already run successfully. " +
+      "See docs/gpu-reports/2026-09-10-phase-g-qwen3-4b.json.",
   },
 
   "qwen3.8-27b": {
@@ -190,16 +211,15 @@ export const MODELS = {
     configUrl: null,
     tokenizerUrl: null,
     expectedFormat: "Q4_0",
-    maxSeqDefault: 512,
-    // Higher than SmolLM2's 60: Qwen3 reasons in a <think> block before it
-    // answers, and 60 tokens routinely cut that block off mid-thought in live
-    // testing (see IMPLEMENTATION_PLAN.md Phase D). Calibrated against a real
-    // measurement, not a guess: a live run of "Why is the sky blue? Explain
-    // briefly." needed 275 tokens for a complete think-plus-answer turn ending
-    // naturally at <|im_end|> (220 cut the same prompt off mid-think). 320 gives
-    // that headroom while still leaving most of the 512-position window free
-    // for the rest of a short conversation.
-    maxTokensDefault: 320,
+    maxSeqDefault: 2048,
+    // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
+    // whole thought plus the answer after it or the turn dies mid-sentence.
+    // Measured, not guessed: 0.6B needed 275 tokens to finish "Why is the sky blue?
+    // Explain briefly." (60 and 220 both cut it off), and 1.7B was still inside its
+    // <think> block at 320. 640 clears both with room to spare, and against the
+    // 2048-position window above still leaves ~1400 positions for follow-up turns.
+    // room.js lowers this further, per turn, when less context than that remains.
+    maxTokensDefault: 640,
     wireDtype: "f16",
     sourceRevision: null,
     minRoomEnvelopeBytes: Math.round(16.5 * GB),

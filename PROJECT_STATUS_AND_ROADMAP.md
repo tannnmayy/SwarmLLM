@@ -133,15 +133,23 @@ scale:
 1. The current Qwen proof used two browser peers on one physical AMD GCN-5 development
    GPU. A second physical laptop/phone has not yet been recorded as a passing Qwen
    participant.
-2. The live recovery run exercises a worker disconnect. An actual WebGPU
-   `device.lost` event during generation has not been induced; its error handling is
-   unit-tested.
+2. ~~An actual WebGPU `device.lost` event during generation has not been induced.~~
+   **Closed 2026-09-10.** One occurred for real while loading Qwen3 4B past this
+   GPU's capacity, and `checkDeviceLost()` surfaced it as the intended message
+   ("GPU device lost (unknown): A valid external Instance reference no longer
+   exists. — this worker cannot continue; it must be re-planned around.") rather
+   than a raw Dawn exception. Recovery from a worker disconnect is separately
+   proven for both the two-device and three-device (middle-peer) cases.
 3. The Qwen tokenizer uses the repository's GPT-2-style pre-tokenizer regex. It matches
    the tested plain-English prompt, but it is not yet a general byte-exact port of
    Qwen's own pre-tokenizer for all digits, whitespace, and punctuation cases.
-4. Qwen3 1.7B has now been fetched and passed the read-only GGUF/config preflight,
-   but it has not yet passed the browser, split, recovery, or external-reference
-   gates. Qwen3 4B remains a descriptor and has not been fetched.
+4. **Qwen3 1.7B is now Verified** (2026-09-10): it passed the browser, split,
+   live two-device room, recovery, and external-reference gates, and an exact
+   token-ID match against `transformers` fp32. **Qwen3 4B has been fetched and
+   byte-verified**, passes the 21/21 read-only preflight, and its kernels are
+   proven correct at hidden 2560 (half the model, 2235 MB, loads and computes) —
+   but the full model allocates 4076 MB and then loses the GPU device on the
+   first inference pass. 4B is blocked on a second physical GPU, not on code.
 5. Qwen 3.8 27B is a different hybrid architecture. Its Gated-DeltaNet engine and
    shaders are not imported, and the current planner still assumes uniform dense
    layers.
@@ -506,8 +514,8 @@ The UI registry is `models/registry.mjs`. Status is evidence-oriented:
 |---|---|---|---|---|
 | `smollm2-135m` | SmolLM2 135M Instruct | Local per-layer F16 shards; CPU engine | Verified | Dependable CPU distributed fallback and recovery demo |
 | `qwen3-0.6b` | Qwen3 0.6B | Local Q8_0 GGUF; WebGPU DenseEngine | Verified with scope caveat | Real room split, recovery, and fixed external reference match |
-| `qwen3-1.7b` | Qwen3 1.7B | Local Q8_0 GGUF; read-only preflight passed | Experimental | Needs GPU/browser, split, recovery, and reference gates |
-| `qwen3-4b` | Qwen3 4B | Official GGUF URLs configured, artifact not fetched | Planned | Needs the 1.7B gate first and a genuine three-device proof |
+| `qwen3-1.7b` | Qwen3 1.7B | Local Q8_0 GGUF; WebGPU DenseEngine | Verified with scope caveat | Full gate passed: split equivalence, live two-device room, recovery in 52.0 s, exact external reference match. First rung with a **lossy f16** wire, so split-vs-solo equality is measured, not guaranteed |
+| `qwen3-4b` | Qwen3 4B | Local Q8_0 GGUF, byte-verified; preflight 21/21 | Experimental | Kernels proven correct at hidden 2560; full model loses the GPU device on this machine. Blocked on a second physical GPU, not on code |
 | `qwen3.8-27b` | Qwen 3.8 27B | Q4 hybrid descriptor, no model URL/engine | Planned | Needs a new hybrid engine and heterogeneous scheduler |
 
 ### 5.1 SmolLM2 135M
@@ -570,14 +578,22 @@ transport, and room contract. Their promotion is intentionally separate because 
 descriptor, URL, or successful metadata parse is not evidence that a larger model fits
 browser buffer limits or produces correct tokens.
 
-The Qwen3 1.7B read-only preflight is now complete. `tools/probe-gguf.mjs
-qwen3-1.7b` checks the local file identity, GGUF architecture/quantization, GGUF
-metadata against `config.json`, tensor-byte accounting, wire encoding, and the
-planner's capacity envelope. It currently reports 21/21 checks passing for the
-1,834,426,016-byte artifact (about 1,749.4 MiB), including hidden size 2048, 28
+`tools/probe-gguf.mjs` checks local file identity, GGUF architecture/quantization,
+GGUF metadata against `config.json`, tensor-byte accounting, wire encoding, and the
+planner's capacity envelope. Both 1.7B and 4B report 21/21.
+
+For 1.7B (1,834,426,016 bytes, about 1,749.4 MiB) it confirms hidden size 2048, 28
 layers, 16 attention heads, 8 KV heads, intermediate size 6144, and a two-way even
-split estimate of roughly 1,086 MiB host / 771 MiB worker. This is a valuable gate,
-but it is not yet a WebGPU load or distributed-generation proof.
+split of roughly 1,086 MiB host / 771 MiB worker. The live run then matched that
+almost exactly — 1029.5 MiB host and 714.2 MiB worker — and 1.7B has since passed
+the full gate and is `VERIFIED`.
+
+For 4B (4,280,404,704 bytes) it confirms hidden size 2560, 36 layers, 32 attention
+heads over 8 KV heads, intermediate size 9728, and a solo cost of 4,221 MiB. That
+figure turned out to be the whole story: 4B allocates on this GPU and then loses
+the device during inference, so the preflight's capacity envelope is doing exactly
+the job it was written for — telling you what a rung will cost before you spend an
+hour discovering it in a browser.
 
 Suggested initial soft capacity budgets from the blueprint are:
 
@@ -878,13 +894,44 @@ Completed. Qwen3 receives a model-specific cap of 320, detects `<|im_end|>`, and
 enough headroom for the observed 275-token thought-plus-answer example. The 512-position
 context remains intentionally explicit and finite.
 
-### Phase F preflight — Qwen3 1.7B artifact preparation
+### Phase F — Qwen3 1.7B Q8_0
 
-Started, but not a completed model-promotion phase. The 1.7B Q8_0 GGUF, config, and
-tokenizer now exist under `models/qwen3-1.7b/`; the registry records the pinned source
-revision and SHA-256; and `tools/probe-gguf.mjs qwen3-1.7b` passes 21/21 read-only
-checks. The GPU load, one-device golden, split, recovery, and reference gates remain
-open, so the registry correctly stays `EXPERIMENTAL`.
+**Completed 2026-09-10; registry promoted to `VERIFIED`.** The artifact is pinned
+and byte-verified (1,834,426,016 bytes, SHA-256 matching HF's `X-Linked-ETag`), and
+`tools/probe-gguf.mjs qwen3-1.7b` passes 21/21. Beyond the preflight, all of the
+following now hold on recorded hardware:
+
+- **One-device golden.** All 28 layers, 1743.8 MB, coherent greedy output.
+- **Split equivalence.** A 14+14 split reproduces the solo token sequence exactly.
+- **Live two-device room.** Real WebRTC; host 1029.5 MB, worker 714.2 MB. The
+  worker downloaded only its own 14 layers, which is the range-only evidence.
+- **Worker-loss recovery.** Detected in 1 ms, full solo reload of 1743.8 MB in
+  30.8 s, 161 tokens replayed in 20.5 s, 52.0 s total, answer continuing as one
+  coherent thought. This is the scale at which the Phase A buffer-disposal fix
+  becomes load-bearing rather than merely correct.
+- **External reference.** 36/36 prompt tokens and 12/12 generated tokens identical
+  to `transformers` fp32.
+
+One property genuinely changes at this rung: hidden 2048 is too wide for an f32
+hidden state to fit a single SCTP slice, so the wire drops to **lossy f16**. The
+split-vs-solo token match above is therefore an empirical result rather than the
+structural guarantee it is at 0.6B. Report:
+`docs/gpu-reports/2026-09-10-phase-f-qwen3-1.7b.json`.
+
+### Phase G — Qwen3 4B Q8_0 (partial; blocked on hardware)
+
+The artifact is fetched and byte-verified (4,280,404,704 bytes, SHA-256 matching
+HF's `X-Linked-ETag`) and passes 21/21 preflight checks. Crucially, the engine is
+proven correct at this model's dimensions: 18 of 36 layers plus the embedding
+table (2235.3 MB) loads and computes finite, non-zero hidden states of width 2560.
+
+The full model does not run here. It allocates all 36 layers (4076.4 MB) and then
+loses the GPU device on the first inference pass. Because every "device" in a
+single-machine test is a browser context sharing one GPU, no split arrangement
+reduces the ~4.2 GB total, so this cannot be closed on one machine. A 2-way split
+needs roughly 2308 MB (host, carrying the tied embedding table) and 1914 MB
+(worker) — both near the 2235 MB this GPU has already run successfully. Report:
+`docs/gpu-reports/2026-09-10-phase-g-qwen3-4b.json`.
 
 ---
 
@@ -1106,7 +1153,12 @@ The shortest responsible sequence is:
 5. Run one normal prompt from each screen and confirm mirrored output.
 6. Drop the worker and capture recovery.
 7. Add telemetry if the demo needs a convincing performance explanation.
-8. Only then complete the Qwen3 1.7B browser/split/recovery gates and promote it.
+8. Qwen3 1.7B's browser/split/recovery/reference gates are complete and it is
+   promoted. On two real devices it is now the better demo than 0.6B: ~1.03 GB
+   host and ~714 MB worker, and the split is doing visible work.
+9. With two capable laptops, attempt Qwen3 4B (~2.3 GB host, ~1.9 GB worker).
+   That is the first rung where the swarm is not a demonstration of the idea but
+   the only way to run the model at all.
 
 For an immediate fallback, keep the SmolLM2 CPU demo ready. It is smaller, slower, and
 less visually impressive, but it is already the most portable room/recovery proof.

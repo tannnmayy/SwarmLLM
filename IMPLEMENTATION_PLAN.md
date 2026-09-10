@@ -961,20 +961,26 @@ earlier, and can be pulled forward opportunistically:
 | B — Reference cross-check | Phase 3 (done) | Verified/Experimental verdict for 0.6B | **Done** (2026-09-10) — VERIFIED, fp32 reference (caveat: no compiler for llama.cpp) |
 | C — Telemetry | Phase 3 (done) | Per-hop timing breakdown | Not started — low priority |
 | D — Generation length | Phase 3 (done) | Untruncated live conversations | **Done** (2026-09-10) |
-| E — Multi-hardware | Phase A+B ideally closed first | Reports for real target hardware | Not started — no second physical device available this pass |
-| F — Qwen3 1.7B | **Phase B must close (`blockedOn`)** | Full gate at 1.7B | **Unblocked** (B closed) but not started — a new multi-GB download, deliberately not started without a separate go-ahead |
-| G — Qwen3 4B | **Phase F must close (`blockedOn`)** | Full gate at 4B, 3-device proof | Still blocked on F |
+| E — Multi-hardware | Phase A+B ideally closed first | Reports for real target hardware | **Partly done** — the maintainer ran Qwen3 0.6B across two real physical devices successfully. No metrics recorded, and nothing above 0.6B has run on a second device |
+| F — Qwen3 1.7B | **Phase B must close (`blockedOn`)** | Full gate at 1.7B | **Done** (2026-09-10) — VERIFIED, full gate incl. an exact external reference match |
+| G — Qwen3 4B | **Phase F must close (`blockedOn`)** | Full gate at 4B, 3-device proof | **Partial** — kernels proven correct at hidden 2560; the full model loses the GPU device on this machine. Blocked on a second physical GPU, not on code |
 | H — Qwen 3.8 27B | Independent of F/G, but very large | Vendored hybrid engine, single-device correctness | Not started — largest remaining scope |
 | I — Hardening | Partially independent; see §12 for exact sub-dependencies | Demo-readiness | Not started |
 
 **What actually happened, in order:** A and B were done together (they touch
 different files — A is `room.js`'s recovery path, B is tokenizer/reference
 tooling), and D alongside them, exactly as this table originally recommended.
-F is now unblocked in principle (`models/registry.mjs`'s `qwen3-1.7b.blockedOn`
-text is stale as of this pass — 0.6B is Verified — but its `status` was left at
-`PLANNED` on purpose: starting F means a new multi-GB download and its own full
-verification gate, which is a deliberately separate, larger effort rather than
-something to start as a side effect of closing B).
+A second pass then closed A's remaining Option 2 case (three peers, kill the
+middle device: 1 ms to detect, 7.8 s to recover, token-identical output) and
+Step A.2's live device-loss case, which turned up on its own during the 4B work.
+F went the whole distance and is Verified. G stopped where the hardware stopped.
+
+**The one thing now gating three separate phases is hardware, not code.** E, the
+rest of G, and any 3-device capacity demonstration all need real devices with
+real GPUs. `tools/probe-gguf.mjs` exists so that the entire read-only half of a
+promotion gate — provenance, header/config agreement, and the capacity envelope
+for 1-, 2- and 3-way splits — can still be run in Node on any machine before
+anyone plugs in a second laptop.
 
 ---
 

@@ -1,0 +1,103 @@
+{
+  "t": "2026-09-10T04:55:00Z",
+  "phase": "F — promote Qwen3 1.7B",
+  "model": "qwen3-1.7b",
+  "verdict": "All correctness gates passed. Registry promoted EXPERIMENTAL -> VERIFIED.",
+  "gpu": { "vendor": "amd", "architecture": "gcn-5", "shaderF16": true },
+
+  "provenance": {
+    "upstream": "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
+    "repoCommit": "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+    "bytes": 1834426016,
+    "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    "verification": "HF's X-Linked-ETag header was read BEFORE downloading, then the local file was hashed after. Both the byte length and the SHA-256 match exactly, so the local mirror is byte-identical to the published artifact.",
+    "mirroredTo": "models/qwen3-1.7b/ (gitignored; models/* is excluded from the repo)"
+  },
+
+  "shape": {
+    "layers": 28, "hidden": 2048, "intermediate": 6144,
+    "attentionHeads": 16, "kvHeads": 8, "headDim": 128,
+    "vocab": 151936, "tiedEmbeddings": true,
+    "note": "Same depth as 0.6B (28 layers), twice as wide. Per-layer cost rises from 15.9 MB to 51.0 MB and the tied embedding table from 157.6 MB to 315.3 MB."
+  },
+
+  "gate1_headerProbe": {
+    "tool": "node tools/probe-gguf.mjs qwen3-1.7b (new this session)",
+    "result": "21 passed, 0 failed",
+    "checks": "Every field the engine depends on was cross-checked three ways: the GGUF header, the model's own published config.json, and models/registry.mjs. hidden_size, num_hidden_layers, intermediate_size, num_attention_heads, num_key_value_heads, head_dim, vocab_size, rms_norm_eps, rope_theta and tied-embeddings all agree.",
+    "note": "rms_norm_eps required a float-aware comparison, not ===. GGUF stores it as f32, so config.json's 1e-6 arrives as 9.999999974752427e-7 -- the same number to f32 precision. The tool initially reported this as a failure; the comparison was fixed rather than the expectation loosened.",
+    "byteAccounting": "per-layer + embedding bytes = 1743.8 MB of the 1749.4 MB file = 99.7% (norms and rope tables are the remainder)"
+  },
+
+  "gate2_adapterSelfTest": {
+    "page": "gpu-adapter-test.html",
+    "result": "PASS (whole and split vs an independent CPU reference, 1.12e-7 relative max diff)",
+    "note": "Pre-flight only -- this page uses the tiny synthetic fixture, not the real model. Run unchanged to confirm the adapter itself had not regressed before committing to a 1.8 GB load."
+  },
+
+  "gate3_soloGolden": {
+    "layerRange": [0, 28], "devices": 1, "maxSeq": 64,
+    "bytesLoadedMB": 1743.8, "loadMs": 27768, "generateMs": 8428,
+    "prompt": "<|im_start|>system\nYou are a helpful AI assistant running across several devices at once.<|im_end|>\n<|im_start|>user\nThe sky is blue and the grass is green.<|im_end|>\n<|im_start|>assistant\n",
+    "promptTokens": 36,
+    "sampler": "greedy (argmax)",
+    "tokenIds": [151667, 198, 32313, 11, 279, 1196, 1053, 11, 330, 785, 12884, 374],
+    "decoded": "<think>\nOkay, the user said, \"The sky is",
+    "deviceValidationError": null
+  },
+
+  "gate4_splitEquivalence": {
+    "layerRanges": [[0, 14], [14, 28]],
+    "tokenIds": [151667, 198, 32313, 11, 279, 1196, 1053, 11, 330, 785, 12884, 374],
+    "matchesSolo": true,
+    "whyThisIsNotAGuaranteeHere": "This is the first rung where the wire is LOSSY. room/wire.js's chooseEncoding() sends an f32 hidden state whenever it still fits one SCTP slice; at hidden=1024 (0.6B) it does, so 0.6B's split output is bit-identical to its solo output by construction. At hidden=2048 an f32 state would cost a second slice per hop, so 1.7B falls to f16 and the hidden state is quantized on every hop. The token-for-token match above is therefore an EMPIRICAL result -- f16 rounding did not move a single greedy argmax across 12 tokens -- not a structural guarantee. A longer generation or a different prompt could in principle diverge.",
+    "relatedFix": "models/registry.mjs's qwen3-0.6b entry declared wireDtype 'f16' when chooseEncoding(1024) actually returns 'f32'. The field is read by nothing (room.js derives the encoding from spec.hidden), so the error was invisible, but it inverted the reason 0.6B's split test is bit-identical. Corrected on 2026-09-10, and tools/probe-gguf.mjs now cross-checks the declared value against chooseEncoding for every model."
+  },
+
+  "gate5_liveTwoDeviceRoom": {
+    "transport": "real WebRTC data channels between two browser contexts, real signaling over /signal",
+    "strategy": "even (forced -- the planner would otherwise correctly choose solo, since one device here can hold the whole model)",
+    "hostRange": [0, 14], "hostMB": 1029.5,
+    "workerRange": [14, 28], "workerMB": 714.2,
+    "totalMB": 1743.7,
+    "rangeOnlyDownloadEvidence": "The worker loaded 714.2 MB -- exactly its 14 layers at 51.0 MB each -- not the 1743.8 MB whole file. A device downloads only the range it was dealt.",
+    "tiedEmbeddingNote": "host 1029.5 MB = 14 layers (714.2 MB) + the 315.3 MB tied embedding table; worker 714.2 MB = layers only. Host + worker = 1743.7 MB, i.e. the same total as solo, because the real room runs the LM head on the HOST (room.js's _step() calls headFromHidden after the chain returns). The Appendix C golden script uses a different topology (head on the last engine), which loads the tied table twice and totals 2059.1 MB instead -- worth knowing before comparing memory figures between the two.",
+    "firstTwelveGeneratedTokens": [151667, 198, 32313, 11, 279, 1196, 1053, 11, 330, 785, 12884, 374],
+    "matchesSoloAndSplit": true,
+    "generation": { "tokens": 320, "totalMs": 108194, "tokensPerSec": 2.96, "medianHopMs": 65.7, "contextUsed": "358/508" }
+  },
+
+  "gate6_workerLossRecovery": {
+    "scenario": "dropWorker() mid-generation on the live 14+14 split, i.e. the same code path an unplanned disconnect takes",
+    "chainBrokenToRecoveringMs": 1,
+    "note": "1 ms, versus the 20037 ms this same case took before the _deadPeers fast-fail fix landed earlier today (see the Phase A report). The fix holds at this scale too.",
+    "reload": { "newRange": [0, 28], "bytesMB": 1743.8, "ms": 30765 },
+    "replay": { "tokens": 161, "ms": 20499 },
+    "totalRecoveryMs": 51987,
+    "survivingDevices": 1,
+    "answerContinuity": "The completed 320-token answer reads as one continuous thought across the recovery boundary -- no restart, no repetition, no garbage. No 'error' or 'recover-failed' events fired.",
+    "whyThisScaleMatters": "At 0.6B the GPU buffer-leak fix was correct-but-not-yet-load-bearing (604 MB + 380 MB fits regardless). Here the host had to release a 1029 MB engine before allocating a 1743.8 MB one; without disposing first it would have needed 2.8 GB concurrently on a device whose adapter reports a 2 GB ceiling. This is the first run where Phase A's Step A.1 is doing real work.",
+    "costObservation": "Replay is now the dominant recovery term after the reload: 161 tokens cost 20.5 s (~127 ms/token) against 41 ms for a single token at 0.6B. Replay cost scales with both conversation length and model size, so a long conversation on a large model will have a visibly expensive recovery. Worth knowing before quoting a recovery time in a demo."
+  },
+
+  "gate7_externalReferenceCheck": {
+    "referenceImplementation": {
+      "tool": "transformers.AutoModelForCausalLM", "transformersVersion": "5.4.0", "torchVersion": "2.13.0+cpu",
+      "modelId": "Qwen/Qwen3-1.7B", "dtype": "float32 (unquantized)"
+    },
+    "promptTokenIds": [151644, 8948, 198, 2610, 525, 264, 10950, 15235, 17847, 4303, 3941, 3807, 7611, 518, 3055, 13, 151645, 198, 151644, 872, 198, 785, 12884, 374, 6303, 323, 279, 16359, 374, 6176, 13, 151645, 198, 151644, 77091, 198],
+    "promptTokenizationMatch": true,
+    "referenceGeneratedTokenIds": [151667, 198, 32313, 11, 279, 1196, 1053, 11, 330, 785, 12884, 374],
+    "roomGeneratedTokenIds": [151667, 198, 32313, 11, 279, 1196, 1053, 11, 330, 785, 12884, 374],
+    "generatedTokenIdMatch": true,
+    "caveat": "Same caveat as Phase B at 0.6B: this reference runs the unquantized fp32 weights, not a Q8_0-native tool such as llama.cpp, because no C/C++ compiler and no llama-cpp-python wheel are available in this environment. It is strong evidence for architecture, tokenizer and end-to-end kernel correctness, and shows Q8_0 did not move a greedy decision for this prompt -- it is not a general bit-identity proof for Q8_0."
+  },
+
+  "stillOpenForThisModel": [
+    "No run on a second physical device. Every 1.7B measurement here comes from two browser contexts sharing one AMD gcn-5 adapter. The maintainer has confirmed a real two-device run for 0.6B, but not for 1.7B.",
+    "No three-device split attempted at this rung.",
+    "The 320-token default cap is not enough for this model to finish a full think-plus-answer on the test prompt -- it stopped mid-<think>. 1.7B is meaningfully more verbose than 0.6B; the cap is a demo default, not a model limit."
+  ],
+
+  "regressionCheck": "npm test: 183/183 passing throughout."
+}

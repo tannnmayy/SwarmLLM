@@ -73,14 +73,53 @@
       "outcome": "Recovered in 3.2 s; the post-recovery answer is token-identical to the pre-existing golden reference for the same fixed prompt, despite the disconnect landing 1 token into the conversation and the entire model being reloaded solo mid-turn."
     }
   ],
-  "regressionCheck": "npm test: 181/181 passed (177 baseline + 4 new checkDeviceLost unit tests), both before and after the dead-peer fix.",
+  "option2_threeDeviceMiddleKill": {
+    "addedOn": "2026-09-10, later the same day",
+    "scenario": "The Option 2 case this report originally listed as not attempted: three devices, genuine 3-way split, kill the MIDDLE device mid-generation. This is the direct GPU analog of tests/recovery.test.mjs's runWithFailure(1, \"the middle device leaves\"), and is harder than Option 1 because the chain topology must be re-ordered rather than merely shrunk.",
+    "model": "qwen3-0.6b",
+    "initialSplit": {
+      "strategy": "even (forced)",
+      "chain": "host -> p4bby4 -> p5iyt5 -> host",
+      "host": { "range": [0, 10], "mb": 317.1 },
+      "middle": { "id": "p4bby4", "range": [10, 19], "mb": 143.5 },
+      "last": { "id": "p5iyt5", "range": [19, 28] }
+    },
+    "kill": { "victim": "p4bby4 (the middle device)", "method": "room.dropWorker(room.chain[0]) -- the same code path an unplanned disconnect takes", "atGeneratedToken": 77, "atPosition": 112 },
+    "timeline_ms": {
+      "chain-broken": 224499, "recovering": 224500, "planned": 224501,
+      "worker-ready": 226116, "loaded": 226779, "replaying": 226860,
+      "replayed": 232255, "recovered": 232256, "gen-done": 238386
+    },
+    "chainBrokenToRecoveringMs": 1,
+    "rePlan": "The surviving worker, which had held [19,28), was re-dealt [14,28); the host grew from [0,10) to [0,14) and re-loaded 380.9 MB. A genuine re-order of the chain, not just a shrink.",
+    "replay": { "tokens": 112, "ms": 5395 },
+    "totalRecoveryMs": 7755,
+    "survivingDevices": 2,
+    "tokenIdMatch": {
+      "reference": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+      "observed": [151667, 198, 32313, 11, 279, 1196, 9733, 429, 279, 12884, 374, 6303],
+      "match": true
+    },
+    "answerOutcome": "Generation continued to a natural finish: 182 tokens at 9.25 tok/s, median hop 21.8 ms, a complete <think> block with a closing </think> and a real final answer, stopping at <|im_end|> rather than hitting the 320-token cap. No 'error' or 'recover-failed' events fired.",
+    "verdict": "PASS. Phase A's Option 2 is now closed on real hardware, with the same 1 ms detect-to-recover latency the two-device case showed."
+  },
+
+  "regressionCheck": "npm test: 181/181 passed (177 baseline + 4 new checkDeviceLost unit tests), both before and after the dead-peer fix. Later the same day, 188/188 after the Phase F additions.",
   "selfTestsReconfirmed": {
     "gpu-test.html": "PASS (all kernels + f32/q8/q4 end-to-end, unchanged by this session's edits)",
     "gpu-adapter-test.html": "PASS (whole + split vs CPU reference, 1.12e-7 relative max diff, unchanged)"
   },
+  "step_A2_liveDeviceLoss_nowCovered": {
+    "addedOn": "2026-09-10, during the Phase G (Qwen3 4B) work",
+    "status": "CLOSED — this report previously listed a real WebGPU device-lost event as unexercised. One occurred naturally while pushing Qwen3 4B past this GPU's capacity, which exercised Step A.2's code path for real rather than only in unit tests.",
+    "howItHappened": "Qwen3 4B Q8_0 solo (36 layers, 4076.4 MB) allocated successfully, then lost the device on the first inference pass -- genuine memory exhaustion, not a validation error.",
+    "rawDeviceLost": { "reason": "unknown", "message": "A valid external Instance reference no longer exists." },
+    "whatTheCallerSaw": "GPU device lost (unknown): A valid external Instance reference no longer exists. — this worker cannot continue; it must be re-planned around.",
+    "verdict": "checkDeviceLost() did exactly its job: the failure surfaced as a named, actionable device-loss message attributable to the right cause, instead of the raw Dawn-internal exception that would otherwise have come out of an in-flight GPU call. This is the message a room would now show, and the signal _stepSafe() would turn into a re-plan.",
+    "seeAlso": "docs/gpu-reports/2026-09-10-phase-g-qwen3-4b.json"
+  },
+
   "notCoveredThisSession": [
-    "Option 2 (3-tab, kill the middle device) -- not attempted; Option 1 passed cleanly on the first fully-instrumented try, and the plan explicitly says to do Option 2 only after that.",
-    "An actual WebGPU device-lost event (as opposed to a peer disconnect) mid-generation -- checkDeviceLost's live trigger path is unexercised; only its pure logic is unit-tested.",
     "Whether a partial-range-reuse optimization exists for the host's unchanged [0,14) sub-range during a range-grow recovery -- confirmed by direct observation that it does NOT: every recovery in this report reloaded all 28 layers fresh, consistent with room.js dealing whole ranges per device (see IMPLEMENTATION_PLAN.md section 3.4)."
   ]
 }

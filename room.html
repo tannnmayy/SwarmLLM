@@ -87,9 +87,16 @@
   </div>
   <div class="bar" style="margin-top:8px">
     <select id="model" style="flex:1"></select>
+    <select id="ctx" title="context window — costs KV memory on every device, and splits across them">
+      <option value="">context: model default</option>
+      <option value="1024">1024 tokens</option>
+      <option value="2048">2048 tokens</option>
+      <option value="4096">4096 tokens</option>
+    </select>
   </div>
   <div class="dim" style="font-size:11px;margin-top:8px" id="modelWhy"></div>
-  <div class="dim" style="font-size:11px;margin-top:4px">Leave the code blank to open a new room. Opening a join link picks the model for you.</div>
+  <div class="dim" style="font-size:11px;margin-top:4px" id="ctxWhy"></div>
+  <div class="dim" style="font-size:11px;margin-top:4px">Leave the code blank to open a new room. Opening a join link picks the model and context for you.</div>
 </div>
 
 <div class="card hide" id="roomCard">
@@ -203,9 +210,28 @@ function updateModelWhy() {
   const m = availableModels(lastCaps).find((x) => x.id === id);
   $("modelWhy").textContent = m ? (m.unavailableReason ? "Unavailable: " + m.unavailableReason : m.blockedOn ? "Blocked on: " + m.blockedOn : m.why || "") : "";
 }
+// The context window is the most *splittable* resource in the room: the KV cache is
+// held per layer, so a device only pays for the layers it holds. Doubling the window
+// roughly doubles KV, but in a two-way split each device carries only half of that.
+// Showing the estimate up front stops "4096" from being a blind bet on stage.
+function updateCtxWhy() {
+  const m = availableModels(lastCaps).find((x) => x.id === $("model").value);
+  const chosen = +$("ctx").value || m?.maxSeqDefault || 512;
+  if (!m || m.engineKind !== "dense-gguf") { $("ctxWhy").textContent = ""; return; }
+  // 8 KB per position per layer for every Qwen3 rung here (8 KV heads x 128 dims,
+  // k and v, f32). Weights are not included — this is the delta the window costs.
+  const kvAllMB = (8192 * chosen * (m.id === "qwen3-4b" ? 36 : 28)) / 2 ** 20;
+  $("ctxWhy").textContent =
+    `${chosen} tokens → ~${kvAllMB.toFixed(0)} MB of KV cache total, ` +
+    `~${(kvAllMB / 2).toFixed(0)} MB per device on a 2-way split, ` +
+    `~${(kvAllMB / 3).toFixed(0)} MB on a 3-way.`;
+}
 let lastCaps = { webgpu: typeof navigator !== "undefined" && !!navigator.gpu };
+if (hash.get("ctx")) $("ctx").value = hash.get("ctx");
 renderModelOptions(lastCaps);
-$("model").onchange = updateModelWhy;
+updateCtxWhy();
+$("model").onchange = () => { updateModelWhy(); updateCtxWhy(); };
+$("ctx").onchange = updateCtxWhy;
 // Refine with the real shader-f16 capability once an adapter request resolves,
 // without blocking the initial render on a GPU round trip.
 if (navigator.gpu) {
@@ -292,10 +318,11 @@ async function join() {
     Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
   const name = $("name").value.trim() || "device";
   const model = $("model").value || "smollm2-135m";
+  const maxSeq = +$("ctx").value || null;
   localStorage.setItem("swarm-name", name);
   $("go").disabled = true;
 
-  room = new Room({ code, name, model });
+  room = new Room({ code, name, model, maxSeq });
   // Module scope hides `room` from the console otherwise; a support report or a
   // recovery-correctness check (compare token IDs before/after a kill — see
   // IMPLEMENTATION_PLAN.md's Phase A) needs to read room.history/room.stats live.
@@ -391,10 +418,26 @@ async function join() {
     answerEl.textContent += piece;
     $("chat").scrollTop = $("chat").scrollHeight;
   });
-  room.on("context-full", ({ used, limit, turns }) => {
-    bubble("q", "swarm", `The context window is full — ${used} of ${limit} positions across ${turns} turn${turns === 1 ? "" : "s"}. This model holds 512, which is small and real. Press "New conversation" to start again.`);
-    log(`context full: ${used}/${limit}`, "warn");
+  room.on("context-full", ({ used, limit, turns, roomLeft }) => {
+    bubble("q", "swarm", `Not enough context left to answer — ${used} of ${limit} positions used across ` +
+      `${turns} turn${turns === 1 ? "" : "s"}, leaving ${Math.max(0, roomLeft ?? 0)} for a reply. ` +
+      `Refusing rather than starting an answer that would stop mid-sentence. ` +
+      `Press "New conversation", or start a room with a larger context.`);
+    log(`context full: ${used}/${limit}, ${roomLeft} left for a reply`, "warn");
   });
+  // "cap" means the model was still going when it hit its per-model token budget;
+  // "context" means the window itself ran out. Saying which one is the difference
+  // between a knob to turn and a limit to respect.
+  room.on("cut-short", ({ why, tokens, cap, requested }) => {
+    if (why === "context") {
+      bubble("q", "swarm", `Answer cut short after ${tokens} tokens — the context window ran out. Start a room with a larger context to finish thoughts like this one.`);
+      log(`cut short at ${tokens}: context exhausted (cap lowered to ${cap} from ${requested})`, "warn");
+    } else {
+      bubble("q", "swarm", `Answer cut short after ${tokens} tokens — this model's generation cap. There is still context left; the cap is the limit here.`);
+      log(`cut short at ${tokens}: hit the ${cap}-token generation cap`, "warn");
+    }
+  });
+  room.on("context-changed", ({ from, to }) => log(`context window ${from ?? "default"} → ${to} (host's choice)`, "warn"));
   room.on("truncated", () => log("answer cut short — hit the context limit", "warn"));
 
   room.on("gen-done", (s) => {
@@ -468,7 +511,8 @@ async function join() {
     $("code").textContent = code2;
     $("sig").textContent = "connected";
     $("sig").className = "ok";
-    const hashOut = "r=" + code2 + (model === "smollm2-135m" ? "" : "&model=" + model);
+    const hashOut = "r=" + code2 + (model === "smollm2-135m" ? "" : "&model=" + model) +
+      (maxSeq ? "&ctx=" + maxSeq : "");
     location.hash = hashOut;
     $("joinurl").textContent = "join link: " + location.origin + location.pathname + "#" + hashOut;
     show("joinCard", false); show("roomCard", true); show("devCard", true);

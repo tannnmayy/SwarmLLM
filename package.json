@@ -12,6 +12,7 @@
     "test:recovery": "node tests/recovery.test.mjs",
     "test:gpu-adapter": "node tests/gpu-adapter.test.mjs",
     "model": "node tools/fetch-model.mjs smollm2-135m",
+    "probe": "node tools/probe-gguf.mjs",
     "serve": "node tools/serve.mjs 8443",
     "cert": "bash tools/make-cert.sh",
     "calibrate": "node tools/calibrate.mjs",

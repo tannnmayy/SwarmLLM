@@ -76,8 +76,25 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
       per-descriptor `maxTokensDefault` (320 for the Qwen3 family) was set from
       that number, not a guess, and re-verified live to produce the same complete,
       untruncated answer using the registry default with no override.
+- [x] **Qwen3 1.7B Q8_0 promoted to Verified** — the full gate at the next rung up:
+      byte-verified 1.83 GB download, a three-way header/config.json/registry
+      cross-check (`npm run probe qwen3-1.7b`), one-device golden, split
+      equivalence, a live two-device WebRTC room, worker-loss recovery in 52.0 s,
+      and an exact token-ID match against an independent `transformers` fp32
+      reference ([report](docs/gpu-reports/2026-09-10-phase-f-qwen3-1.7b.json)).
+      This is also the first rung whose hidden state crosses the wire as **lossy
+      f16** — at hidden 2048 an f32 state would cost a second SCTP slice per hop —
+      so its split-vs-solo token equality is a measured result, not a guarantee
+      the way it is at 0.6B.
+- [~] **Qwen3 4B Q8_0 — kernels proven, memory is the blocker.** Download
+      byte-verified and the header probe passes 21/21. Half the model (18 of 36
+      layers, 2235 MB) loads and computes correctly, so the engine is right at
+      hidden 2560. The full model allocates 4076 MB and then **loses the GPU
+      device on the first inference pass**. Every "device" in a single-machine
+      test shares one GPU, so no split avoids the ~4.2 GB total — this rung needs
+      a second physical GPU, not more code
+      ([report](docs/gpu-reports/2026-09-10-phase-g-qwen3-4b.json)).
 - [ ] Batched prefill *(token-by-token today; ~3–4 h)*
-- [ ] Larger models fetched and tested (Qwen3 0.6B / 1.7B) *(~1–2 h)*
 - [x] Weight caching in the Cache API — byte-length checked against the manifest,
       quota refusals tolerated. Second join reports "all from cache, no download"
 
@@ -158,6 +175,19 @@ Legend: **[x]** done and verified · **[~]** partially done · **[ ]** not start
       so a WebGPU device was never released across a reload — now disposed in
       `_load()` and the model-change branch of the `deal` handler.
       ([report](docs/gpu-reports/2026-09-10-phase-a-gpu-recovery.json))
+- [x] **Same gate met at 1.7B, where it costs real memory:** dropped the worker
+      out of a live 14+14 Qwen3 1.7B split. `chain-broken`→`recovering` took
+      **1 ms**, the host disposed its 1029 MB engine and re-loaded all 28 layers
+      (**1743.8 MB**) in 30.8 s, replayed **161 tokens in 20.5 s**, and recovered
+      in **52.0 s** total with the answer continuing as one coherent thought.
+      This is the scale at which the buffer-leak fix stops being hygiene and
+      starts being load-bearing: without disposing first, the host would have
+      needed 1029 MB + 1744 MB concurrently.
+      ([report](docs/gpu-reports/2026-09-10-phase-f-qwen3-1.7b.json))
+- [x] **Verified on two separate physical devices** (Qwen3 0.6B Q8_0) — run by
+      the maintainer over the LAN HTTPS path, not two tabs on one GPU. Confirms
+      the WebRTC/mesh/join-link path works between real machines. No timing or
+      throughput numbers were recorded for that run, so none are quoted here.
 - [ ] Spare layer copies for instant failover *(stretch; would cut recovery time
       further by keeping a warm replica)*
 - [ ] Host loss *(unrecoverable by design today: the conversation, tokenizer and

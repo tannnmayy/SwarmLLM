@@ -39,14 +39,24 @@ import { MODELS, getModel } from "../models/registry.mjs";
 // conversation does not get, and the window is only 512 positions wide.
 const SYSTEM = "You are a helpful AI assistant running across several devices at once.";
 
+// Below this many free positions a turn is refused rather than started. An answer
+// that has to stop after a dozen tokens is not an answer, and finding that out at
+// the end of a prefill wastes a lap across every device in the room.
+const MIN_ANSWER_TOKENS = 64;
+
 // Re-exported for callers that already do `import { MODELS } from "./room.js"`
 // (room.html). The room itself now asks the registry, not this file, for a
 // model's shape — see models/registry.mjs.
 export { MODELS };
 
 export class Room {
-  constructor({ code, name, model = "smollm2-135m" } = {}) {
+  // `maxSeq` overrides the model's own default context window. It must be the same
+  // on every device in the room -- it sizes the KV cache each one allocates and the
+  // spec the planner solves against -- so the host's choice travels in the deal and
+  // workers adopt it, exactly like `model` does.
+  constructor({ code, name, model = "smollm2-135m", maxSeq = null } = {}) {
     this.model = model;
+    this.maxSeq = maxSeq;
     this.mesh = new Mesh({ room: code, name, meta: {} });
     this.engine = null;
     this.tok = null;
@@ -95,7 +105,7 @@ export class Room {
   // than the one it assumed (see the "deal" case in _onMsg) — one code path for
   // both, so there is only one place this can be wrong.
   async _loadModelSpec(descriptor) {
-    const maxSeq = descriptor.maxSeqDefault || 512;
+    const maxSeq = this.maxSeq || descriptor.maxSeqDefault || 512;
     if (descriptor.engineKind === "cpu-smollm") {
       const manifest = await (await fetch(descriptor.dir + "/manifest.json")).json();
       this.spec = modelSpec(manifest, { precision: "f32", maxSeq });
@@ -311,14 +321,20 @@ export class Room {
         // assumption — every device in the chain has to agree on one model, or
         // the wire's hidden-state width and the tokenizer's vocabulary are both
         // wrong without anything raising an error until logits come out as noise.
+        // A different context window is as invalidating as a different model: it
+        // changes every device's KV allocation and the spec the planner solved
+        // against, so it forces the same full reload path.
+        const seqChanged = !!m.maxSeq && m.maxSeq !== this.spec?.maxSeq;
         const modelChanged = m.model !== this.model;
-        if (modelChanged) {
+        if (modelChanged || seqChanged) {
           let descriptor;
           try { descriptor = getModel(m.model); }
           catch (e) { this._emit("error", `host dealt an unknown model "${m.model}": ${e.message}`); break; }
 
-          this._emit("model-changed", { from: this.model, to: m.model });
+          if (modelChanged) this._emit("model-changed", { from: this.model, to: m.model });
+          if (seqChanged) this._emit("context-changed", { from: this.spec?.maxSeq || null, to: m.maxSeq });
           this.model = m.model;
+          if (m.maxSeq) this.maxSeq = m.maxSeq;
           try {
             await this._loadModelSpec(descriptor);
           } catch (e) {
@@ -339,7 +355,7 @@ export class Room {
         // they held before. Re-downloading those layers would turn a two-second
         // recovery into a thirty-second one, so keep the weights and clear only the
         // cache — the host is about to replay the conversation into it anyway.
-        const same = !modelChanged && this.engine && this.range &&
+        const same = !modelChanged && !seqChanged && this.engine && this.range &&
           this.range[0] === m.range[0] && this.range[1] === m.range[1];
         this.hostId = m.host;
         this.range = m.range;
@@ -455,6 +471,9 @@ export class Room {
       layerRange: range,
       hasEmbed,
       hasHead,
+      // Must match the window _loadModelSpec() built this.spec against, or the
+      // planner's KV budget and the engine's actual allocation disagree.
+      maxSeq: this.spec?.maxSeq,
       // Reuse the header this device already fetched in join() (or in the "deal"
       // handler, on a model change) instead of range-fetching it a second time —
       // it describes the same file either way.
@@ -575,6 +594,7 @@ export class Room {
       this.mesh.send(p.chain[i], {
         t: "deal",
         model: this.model,
+        maxSeq: this.spec.maxSeq,
         range: p.ranges[i],
         next: i + 1 < p.chain.length ? p.chain[i + 1] : null,
         host: this.id,
@@ -739,11 +759,14 @@ ${text}<|im_end|>
 `;
   }
 
-  // How much of the context window is spoken for. The limit is real and small
-  // (512 positions), so it is reported rather than discovered when the room stops
-  // making sense.
+  // How much of the context window is spoken for. The limit is real and finite, so
+  // it is reported rather than discovered when the room stops making sense.
+  //
+  // Falls back to the spec, not to a hardcoded number: this is called before the
+  // engine finishes loading (the capacity panel wants it immediately), and a stale
+  // 512 there would under-report the window by 4x on a room configured for 2048.
   context() {
-    const limit = (this.engine?.maxSeq || 512) - 4;
+    const limit = (this.engine?.maxSeq || this.spec?.maxSeq || 512) - 4;
     return { used: this.pos, limit, frac: this.pos / limit, turns: this.turns.length };
   }
 
@@ -754,17 +777,27 @@ ${text}<|im_end|>
   async generate(text, askedBy = null, { maxTokens = null } = {}) {
     if (this.busy) return;
     if (!this.isHost) { this.mesh.send(this.hostId, { t: "ask", text }); return; }
-    const cap = maxTokens ?? getModel(this.model).maxTokensDefault ?? 60;
+    const requested = maxTokens ?? getModel(this.model).maxTokensDefault ?? 60;
 
-    // Refuse a question there is no room to answer, rather than starting one and
+    // Refuse a question there is no room to ANSWER, rather than starting one and
     // stopping mid-sentence. Sliding the window would mean re-prefilling the whole
     // conversation across the room; at this context size, saying so is honester.
-    const need = this.tok.encode(this._turnPrompt(text)).length + 16;
+    //
+    // This used to reserve a flat 16 tokens while the generation cap was 320, so a
+    // turn was admitted whenever the *prompt* fit and then got cut off mid-thought
+    // by the backstop inside the loop below -- the exact failure this check was
+    // written to prevent. The fix is upstream SwarmLLM's: derive the cap from what
+    // is actually left (`maxNew = min(MAX_NEW, MAX_SEQ - prompt)`) and refuse up
+    // front when the remainder is too small to be worth starting.
+    const promptIds = this.tok.encode(this._turnPrompt(text));
     const ctx = this.context();
-    if (ctx.used + need > ctx.limit) {
-      this._emit("context-full", { ...ctx, need });
+    // -2 for the "<|im_end|>\n" that closes the turn in the cache afterwards.
+    const roomLeft = ctx.limit - ctx.used - promptIds.length - 2;
+    if (roomLeft < MIN_ANSWER_TOKENS) {
+      this._emit("context-full", { ...ctx, need: promptIds.length + MIN_ANSWER_TOKENS, roomLeft });
       return;
     }
+    const cap = Math.min(requested, roomLeft);
 
     this.busy = true;
     this.stats = { tokens: 0, ms: 0, hops: [] };
@@ -783,13 +816,13 @@ ${text}<|im_end|>
       // Only THIS turn is encoded. Everything before it is already in the KV
       // caches spread across the room, so a follow-up question costs one short
       // prefill rather than replaying the conversation.
-      const ids = this.tok.encode(this._turnPrompt(text));
       this.turns.push({ role: "user", content: text });
 
       let logits = null;
-      for (const id of ids) logits = await this._feed(id);
+      for (const id of promptIds) logits = await this._feed(id);
 
       let answer = "";
+      let stopped = "eos";                    // why generation ended, reported in stats
       for (let n = 0; n < cap; n++) {
         const next = argmax(logits);
         if (next === this.eosId) break;                    // <|im_end|>
@@ -799,8 +832,13 @@ ${text}<|im_end|>
         this._emit("token", piece);
         this.stats.tokens++;
         logits = await this._feed(next);
-        if (this.pos >= this.engine.maxSeq - 4) { this._emit("truncated"); break; }
+        // Backstop only: the cap above is already sized to fit, so reaching this
+        // means something drifted (a recovery replay, say) rather than normal use.
+        if (this.pos >= this.engine.maxSeq - 4) { stopped = "context"; this._emit("truncated"); break; }
+        if (n === cap - 1) stopped = cap < requested ? "context" : "cap";
       }
+      if (stopped !== "eos") this._emit("cut-short", { why: stopped, tokens: this.stats.tokens, cap, requested });
+      this.stats.stopped = stopped;
       this.turns.push({ role: "assistant", content: answer });
 
       // Close the assistant turn in the cache. Without this the next question
@@ -822,6 +860,10 @@ ${text}<|im_end|>
       medianHopMs: this.stats.hops.length
         ? +this.stats.hops.slice().sort((a, b) => a - b)[this.stats.hops.length >> 1].toFixed(1)
         : null,
+      // "eos" = the model finished; "cap" = it hit the per-model generation cap;
+      // "context" = the window ran out. Distinguishing these is the difference
+      // between "the model is terse" and "your context is too small".
+      stopped: this.stats.stopped || "eos",
     };
     s.context = this.context();
     this.mesh.broadcast({ t: "gen-done", stats: s });
