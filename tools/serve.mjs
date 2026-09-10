@@ -1,4 +1,4 @@
-// AI Swarm dev server: HTTPS static host over the LAN.
+// AI Swarm dev server: the static half and the signalling half on one listener.
 //
 // WebGPU and WebRTC both require a secure context, so plain http://192.168.x.x
 // makes every phone report "no WebGPU" even when the hardware is fine. We serve
@@ -7,32 +7,28 @@
 //   node tools/serve.mjs [port]
 //
 // Regenerate the cert when the LAN IP changes: see tools/make-cert.sh
+//
+// This is development and LAN demos only. In a deployment the two halves it
+// combines live apart and neither of them is this file:
+//
+//   static  ->  tools/build-static.mjs writes dist/, which goes on a CDN
+//   signal  ->  tools/signal-server.mjs, one small always-on process
+//
+// Keeping them together here is deliberate, not a leftover: on a LAN there is no
+// CDN, the weights should come off this machine rather than the internet, and a
+// page on https:// can only open wss:// on its own origin — sharing one listener
+// removes the whole mixed-content class of failure from the demo path.
 
 import { createServer } from "node:https";
 import { createServer as createHttp } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
-import { join, normalize, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attachSignaling } from "./signal.mjs";
+import { createStaticHandler } from "./static.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PORT = Number(process.argv[2]) || 8443;
-
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".wasm": "application/wasm",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".safetensors": "application/octet-stream",
-  ".bin": "application/octet-stream",
-};
 
 function lanIPs() {
   const out = [];
@@ -45,68 +41,14 @@ function lanIPs() {
 }
 
 const [key, cert] = await Promise.all([
-  readFile(join(ROOT, "certs/key.pem")),
-  readFile(join(ROOT, "certs/cert.pem")),
+  readFile(new URL("../certs/key.pem", import.meta.url)),
+  readFile(new URL("../certs/cert.pem", import.meta.url)),
 ]).catch(() => {
   console.error("No cert found. Run: bash tools/make-cert.sh");
   process.exit(1);
 });
 
-const handler = async (req, res) => {
-  // strip query, decode, and refuse anything that escapes ROOT
-  const url = decodeURIComponent((req.url || "/").split("?")[0]);
-  let rel = normalize(url).replace(/^(\.\.[/\\])+/, "").replace(/^[/\\]+/, "");
-  if (rel === "") rel = "index.html";
-  const path = join(ROOT, rel);
-  if (!path.startsWith(ROOT)) {
-    res.writeHead(403).end("forbidden");
-    return;
-  }
-
-  let info;
-  try {
-    info = await stat(path);
-    if (info.isDirectory()) throw new Error("dir");
-  } catch {
-    res.writeHead(404, { "content-type": "text/plain" }).end("not found: " + rel);
-    return;
-  }
-
-  const head = {
-    "content-type": MIME[extname(path).toLowerCase()] || "application/octet-stream",
-    // never cache during a hackathon: a stale kernel costs an hour of confusion
-    "cache-control": "no-store, no-cache, must-revalidate",
-  };
-  // Deliberately NOT setting COOP/COEP. They only buy SharedArrayBuffer, which the
-  // WebGPU path does not need, and `require-corp` blocks cross-origin weight
-  // downloads (Hugging Face) unless every response carries CORP. Not worth the risk.
-
-  // range support so a phone can resume a partial weight download
-  const range = req.headers.range;
-  if (range) {
-    const m = /bytes=(\d*)-(\d*)/.exec(range);
-    if (m) {
-      const start = m[1] ? Number(m[1]) : 0;
-      const end = m[2] ? Number(m[2]) : info.size - 1;
-      if (start >= info.size || end >= info.size || start > end) {
-        res.writeHead(416, { "content-range": `bytes */${info.size}` }).end();
-        return;
-      }
-      res.writeHead(206, {
-        ...head,
-        "content-range": `bytes ${start}-${end}/${info.size}`,
-        "accept-ranges": "bytes",
-        "content-length": end - start + 1,
-      });
-      createReadStream(path, { start, end }).pipe(res);
-      return;
-    }
-  }
-
-  res.writeHead(200, { ...head, "accept-ranges": "bytes", "content-length": info.size });
-  if (req.method === "HEAD") return res.end();
-  createReadStream(path).pipe(res);
-};
+const handler = createStaticHandler(ROOT);
 
 // Two listeners on the same files:
 //   HTTP  on localhost  - http://localhost is already a secure context, so WebGPU and
@@ -116,9 +58,8 @@ const HTTP_PORT = PORT - 1;
 const plain = createHttp(handler);
 const secure = createServer({ key, cert }, handler);
 
-// Signaling rides on the same listeners, at /signal. A page served over https
-// can only open wss:// on its own origin, so sharing the port removes the whole
-// mixed-content class of failure.
+// Signalling rides on both listeners and shares one room table, which is what lets
+// a laptop on http://localhost and a phone on https://<lan-ip> join the same room.
 attachSignaling(plain, { log: false });
 attachSignaling(secure);
 
@@ -133,4 +74,6 @@ secure.listen(PORT, "0.0.0.0", () => {
   console.log("    Chrome/Android : Advanced -> Proceed to ...");
   console.log("    iOS Safari     : Show Details -> visit this website -> Visit");
   console.log("  Accept it, and WebGPU + WebRTC become available.\n");
+  console.log("  Weights: whichever origin answers first — the mirror under models/ if");
+  console.log("  it is present, else huggingface.co. Force one with #src=mirror / #src=upstream.\n");
 });

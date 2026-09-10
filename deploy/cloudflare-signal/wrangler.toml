@@ -1,0 +1,28 @@
+name = "ai-swarm-signal"
+main = "src/index.js"
+compatibility_date = "2026-04-07"
+
+# Durable Objects on the Workers Free plan are SQLite-backed only, so the class has
+# to be declared with new_sqlite_classes rather than new_classes. This object stores
+# nothing — a room is a set of live sockets that empties itself — but the backend
+# still has to be named.
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[observability]
+enabled = true
+
+# Secrets, set with `wrangler secret put <NAME>` rather than written here:
+#
+#   TURN_KEY_ID           from the Cloudflare dashboard, Realtime -> TURN
+#   TURN_KEY_API_TOKEN    the token issued alongside that key
+#   SIGNAL_ALLOW_ORIGIN   optional, comma-separated. Restricts which PAGES may open
+#                         a socket. Not authentication — the room code still is.
+#
+# Leave the TURN pair unset and /ice returns STUN only, which is a supported
+# configuration: two devices on one network still connect.

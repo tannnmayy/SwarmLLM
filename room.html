@@ -1,185 +1,409 @@
 <!doctype html>
+<!--
+  The room.
+
+  The visual design — palette, type scale, the join-screen/room-screen split, the
+  sidebar-plus-chat layout, peer cards, the per-device load card, chat bubbles and
+  toasts — is adapted from SwarmLLM's room page (https://github.com/Nehanth/swarmllm,
+  MIT), the same project engine/upstream/ is imported from. See
+  THIRD_PARTY_NOTICES.md and UPSTREAM.md.
+
+  The wiring underneath is this project's own: room/room.js's Room, the scheduler's
+  placement comparison, the delivery resolver, and the recovery path all keep the
+  interfaces they already had. Nothing about the model, the plan or the protocol
+  changed to fit this page.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AI Swarm</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>AI Swarm · room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; --bg:#0b0c10; --card:#15161c; --line:#25272f; --fg:#e9eaf0; --dim:#868ba0;
-          --ok:#3ddc84; --bad:#ff5f56; --warn:#ffb02e; --acc:#3b5bff; --acc2:#7c5cff; }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
-         padding:16px; padding-bottom:36px; max-width:820px; margin-inline:auto; }
-  header { display:flex; align-items:baseline; gap:10px; margin-bottom:3px; }
-  h1 { font-size:19px; margin:0; letter-spacing:-.02em; }
-  .tag { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
-         border:1px solid var(--line); border-radius:999px; padding:2px 8px; }
-  .sub { color:var(--dim); font-size:12px; margin-bottom:16px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 15px; margin-bottom:11px; }
-  .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--dim); margin:0 0 9px; font-weight:600;
-             display:flex; justify-content:space-between; align-items:center; gap:10px; }
-  .row { display:flex; justify-content:space-between; gap:10px; padding:3px 0; font-variant-numeric:tabular-nums; }
-  .row .k { color:var(--dim); } .row .v { text-align:right; }
-  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .dim{color:var(--dim)}
-  button { background:var(--acc); color:#fff; border:0; border-radius:10px; padding:11px 15px;
-           font:inherit; font-weight:600; cursor:pointer; }
-  button.ghost { background:#232631; }
-  button.danger { background:#3a1614; color:var(--bad); }
-  button:disabled { opacity:.4; cursor:default; }
-  input, select { background:#0a0b0f; border:1px solid var(--line); color:var(--fg); border-radius:10px; padding:11px; font:inherit; }
-  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .bar input[type=text] { flex:1; min-width:110px; }
-  #code { font:800 26px/1 ui-monospace,Menlo,monospace; letter-spacing:.2em; }
-  .hide { display:none !important; }
+  :root {
+    --bg: #f5f4ee;
+    --panel: #fbfaf5;
+    --panel-2: #efede6;
+    --border: #e1ded2;
+    --text: #16171c;
+    --muted: #8b877a;
+    --faint: #c4c0b1;
+    --accent: #2b4eff;
+    --ok: #1a7f37;
+    --warn: #b58500;
+    --err: #d1242f;
+    --sans: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    background-image: radial-gradient(var(--border) 1px, transparent 1px);
+    background-size: 26px 26px;
+    color: var(--text);
+    font: 15px/1.55 var(--sans);
+    display: flex; flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+  .hide { display: none !important; }
 
-  .dev { display:flex; align-items:center; gap:9px; padding:9px 0; border-top:1px solid var(--line); flex-wrap:wrap; }
-  .dev:first-child { border-top:0; }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--warn); flex:0 0 auto; }
-  .dot.on { background:var(--ok); } .dot.me { background:var(--acc2); } .dot.out { background:#3a3d4a; }
-  .dev .nm { flex:1; min-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .dev .chip { font:11px ui-monospace,Menlo,monospace; border-radius:6px; padding:2px 7px; flex:0 0 auto; }
-  .chip.lay { color:var(--acc2); background:#1b1d2b; }
-  .chip.spd { color:var(--dim); background:#191b22; }
-  .chip.out { color:var(--dim); background:#191b22; font-style:italic; }
-  .dev .rtt { color:var(--dim); font-variant-numeric:tabular-nums; font-size:12px; min-width:44px; text-align:right; }
-  .pbar { height:3px; background:#1d1f28; border-radius:2px; overflow:hidden; margin-top:5px; }
-  .pbar i { display:block; height:100%; background:var(--acc); width:0; transition:width .25s; }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px max(20px, 3vw);
+    padding-top: max(14px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    backdrop-filter: blur(10px);
+    flex: none;
+  }
+  .logo { font-size: 19px; font-weight: 700; letter-spacing: -.02em; }
+  .logo em { font-style: normal; color: var(--accent); }
+  .logo a { color: inherit; text-decoration: none; }
+  .tagline { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; color: var(--muted); text-transform: uppercase; }
+  .spacer { flex: 1; }
+  #room-badge {
+    display: none; font-family: var(--mono); font-size: 14px;
+    background: var(--text); color: var(--bg);
+    border: none; border-radius: 100px; padding: 8px 18px;
+    letter-spacing: 4px; font-weight: 500; cursor: pointer; transition: all .25s;
+  }
+  #room-badge:hover { background: var(--accent); }
 
-  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; font-size:13px; }
-  th { text-align:right; font-weight:600; color:var(--dim); font-size:10px; text-transform:uppercase;
-       letter-spacing:.07em; padding:0 0 6px; }
-  th:first-child, td:first-child { text-align:left; }
-  td { text-align:right; padding:4px 0; border-top:1px solid var(--line); }
-  tr.win td { color:var(--ok); font-weight:600; }
-  tr.dead td { color:#565a6b; }
+  button, input, select {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 16px; font-size: 14px; font-family: var(--sans);
+  }
+  button { cursor: pointer; transition: all .25s cubic-bezier(.2,.8,.2,1); }
+  button:hover:not(:disabled) { border-color: var(--text); transform: translateY(-1px); }
+  button:disabled { opacity: .45; cursor: default; transform: none; }
+  button.primary {
+    background: var(--text); color: var(--bg); border-color: var(--text);
+    font-family: var(--mono); font-size: 13px; border-radius: 100px; padding: 11px 22px;
+  }
+  button.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); box-shadow: 0 8px 26px rgba(43,78,255,.3); }
+  button.danger { color: var(--err); border-color: #f1d4d6; }
+  button.danger:hover:not(:disabled) { border-color: var(--err); }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  a { color: var(--accent); }
 
-  #chat { min-height:110px; max-height:38vh; overflow:auto; }
-  .msg { margin-bottom:12px; }
-  .msg .who { font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.07em; margin-bottom:2px; }
-  .msg .txt { white-space:pre-wrap; word-wrap:break-word; }
-  .msg.q .txt { color:var(--dim); }
-  .cursor::after { content:"▍"; color:var(--acc2); animation:b 1s steps(2) infinite; }
-  @keyframes b { 50% { opacity:0; } }
-  .strip { display:flex; gap:16px; flex-wrap:wrap; font-variant-numeric:tabular-nums; font-size:12px; }
-  .strip b { font-weight:700; font-size:16px; display:block; }
-  .strip span { color:var(--dim); }
-  .why { font-size:12px; color:var(--dim); }
-  .why li { margin-bottom:4px; }
-  .why ul { margin:0; padding-left:16px; }
-  .join { color:var(--dim); font-size:11px; word-break:break-all; margin-top:9px; }
-  #log { font:11px/1.5 ui-monospace,Menlo,monospace; color:var(--dim); max-height:120px; overflow:auto; white-space:pre-wrap; }
-  .slider { display:flex; align-items:center; gap:10px; margin-top:9px; }
-  .slider input[type=range] { flex:1; accent-color:var(--acc); }
-  .slider .val { font:12px ui-monospace,Menlo,monospace; min-width:74px; text-align:right; color:var(--acc2); }
+  /* ---------------- join screen ---------------- */
+  #join-screen { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 28px 24px 40px; overflow-y: auto; }
+  .kicker { font-family: var(--mono); font-size: 10.5px; letter-spacing: .22em; color: var(--muted); }
+  #join-screen h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -.03em; text-align: center; line-height: 1.05; }
+  #join-screen h1 em { font-style: normal; color: var(--accent); }
+  #join-screen .blurb { color: var(--muted); font-size: 14px; text-align: center; max-width: 380px; margin-bottom: 6px; }
+  .join-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  #join-screen input[type=text] { width: 260px; text-align: center; padding: 13px 16px; border-radius: 100px; }
+  #room { font-family: var(--mono); letter-spacing: 6px; text-transform: uppercase; font-weight: 500; width: 190px !important; }
+  #room::placeholder { letter-spacing: normal; font-family: var(--sans); text-transform: none; }
+
+  .setup { border: 1px solid var(--border); border-radius: 18px; background: var(--panel); padding: 16px 18px; width: min(520px, 100%); display: flex; flex-direction: column; gap: 10px; }
+  .setup-k { font-family: var(--mono); font-size: 10px; letter-spacing: .2em; color: var(--muted); text-transform: uppercase; }
+  .setup-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .setup-row > * { flex: 1; min-width: 150px; }
+  .note { font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.6; }
+  .note.warn { color: var(--warn); }
+  .note.err { color: var(--err); }
+  #ready-check { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  #ready-check .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  #ready-check .dot.ok { background: var(--accent); box-shadow: 0 0 0 3px rgba(43,78,255,.15); }
+  #ready-check .dot.bad { background: var(--err); }
+
+  /* ---------------- room screen ---------------- */
+  #room-screen { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; }
+  #side {
+    width: 320px; flex: none; display: flex; flex-direction: column; gap: 10px;
+    padding: 14px; border-right: 1px solid var(--border); overflow-y: auto; overflow-x: hidden; min-height: 0;
+    background: color-mix(in srgb, var(--panel) 70%, transparent);
+  }
+  .side-k { font-family: var(--mono); font-size: 10px; letter-spacing: .2em; color: var(--muted); text-transform: uppercase; }
+  #side-room { padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+  #side-code { font-family: var(--mono); font-size: 26px; letter-spacing: 7px; font-weight: 500; color: var(--accent); cursor: pointer; line-height: 1.2; }
+  .side-hint { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+  #qr-wrap { margin-top: 10px; display: none; }
+  #qr-wrap.on { display: block; }
+  #qr-wrap svg { width: 128px; height: 128px; display: block; border-radius: 8px; }
+  #qr-toggle { font-family: var(--mono); font-size: 10.5px; padding: 5px 12px; border-radius: 100px; margin-top: 8px; }
+
+  #peers { display: flex; flex-direction: column; gap: 8px; }
+  .peer-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; transition: all .3s cubic-bezier(.2,.8,.2,1); }
+  .peer-card:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(20,21,26,.06); }
+  .peer-card.self { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .peer-card.out { opacity: .55; }
+  .peer-name { font-weight: 700; display: flex; align-items: center; gap: 9px; letter-spacing: -.01em; font-size: 14px; }
+  .peer-name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.ok { background: var(--accent); box-shadow: 0 0 0 3px rgba(43,78,255,.15); }
+  .dot.me { background: var(--text); }
+  .dot.warn { background: var(--warn); }
+  .dot.out { background: var(--faint); box-shadow: none; }
+  .peer-stats { font-family: var(--mono); font-size: 10.5px; margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
+  .peer-stats b { color: var(--accent); font-weight: 500; }
+  .peer-stats .out { color: var(--muted); font-style: italic; }
+
+  #ctrl { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; }
+  #ctrl select, #ctrl button { width: 100%; }
+  .pledge-row { display: flex; align-items: center; gap: 9px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .pledge-row > span:first-child { flex: none; }
+  .pledge-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .pledge-row .val { color: var(--accent); min-width: 66px; text-align: right; flex: none; }
+  #cluster-bar { font-family: var(--mono); font-size: 10.5px; color: var(--muted); padding: 2px 2px 6px; margin-top: auto; line-height: 1.7; }
+  #cluster-bar b { color: var(--text); font-weight: 500; }
+
+  /* ---------------- chat pane ---------------- */
+  #chatpane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #chat-log { max-height: 62px; overflow-y: auto; border-bottom: 1px solid var(--border); padding: 6px max(16px, 2vw); font-family: var(--mono); font-size: 10.5px; color: var(--muted); opacity: .85; flex: none; }
+  #chat-log .ok { color: var(--accent); }
+  #chat-log .warn { color: var(--warn); }
+  #chat-log .bad { color: var(--err); }
+
+  #chat-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+  #ai-empty { flex: 1; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; text-align: center; font-family: var(--mono); font-size: 12px; color: var(--muted); padding: 24px; }
+  #ai-empty .big { font-family: var(--sans); font-size: 20px; font-weight: 700; letter-spacing: -.02em; color: var(--text); }
+
+  #load-card { display: none; margin: auto; width: min(500px, 92%); padding: 22px 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 20px; box-shadow: 0 14px 44px rgba(20,21,26,.07); }
+  #load-card.on { display: block; }
+  .lc-k { font-family: var(--mono); font-size: 11px; letter-spacing: .18em; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .lc-k::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.6s infinite; flex: none; }
+  .lc-k span { color: var(--text); letter-spacing: 0; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  .lc-row { display: grid; grid-template-columns: 108px 1fr 44px; align-items: center; gap: 12px; margin: 10px 0; font-family: var(--mono); font-size: 12px; }
+  .lc-row .n { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lc-row .n small { color: var(--muted); display: block; font-size: 10px; }
+  .lc-row .bar { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+  .lc-row .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 4px; transition: width .6s ease; }
+  .lc-row .pct { text-align: right; color: var(--muted); }
+  .lc-row.done .pct { color: var(--accent); }
+  .lc-note { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 14px; line-height: 1.6; }
+
+  #ai-output { display: none; flex-direction: column; padding: 18px max(16px, 3vw); }
+  #ai-output.on { display: flex; }
+  .m { display: flex; flex-direction: column; margin: 8px 0; max-width: 74%; }
+  .m.user { align-self: flex-end; align-items: flex-end; margin-left: auto; }
+  .m.bot { align-self: flex-start; align-items: flex-start; }
+  .m.sys { align-self: center; align-items: center; max-width: 82%; }
+  .m .who { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; }
+  .m .bubble { padding: 10px 14px; border-radius: 16px; font-size: 14.5px; line-height: 1.6; word-wrap: break-word; }
+  .m.user .bubble { background: var(--text); color: var(--bg); border-bottom-right-radius: 5px; }
+  .m.bot .bubble { background: var(--panel); border: 1px solid var(--border); border-bottom-left-radius: 5px; }
+  .m.sys .bubble { background: #fdf6e3; border: 1px solid #eadfbe; color: #6b5a24; font-family: var(--mono); font-size: 12px; text-align: center; }
+  .m .bubble h3, .m .bubble h4 { font-size: 15px; margin: 10px 0 4px; font-weight: 700; }
+  .m .bubble p { margin: 6px 0; }
+  .m .bubble p:first-child { margin-top: 0; }
+  .m .bubble p:last-child { margin-bottom: 0; }
+  .m .bubble ul, .m .bubble ol { margin: 6px 0 6px 18px; }
+  .m .bubble li { margin: 3px 0; }
+  .m .bubble code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+  .m .bubble pre { font-family: var(--mono); font-size: 12px; background: var(--panel-2); padding: 10px 12px; border-radius: 10px; overflow-x: auto; margin: 8px 0; }
+  .m .bubble pre code { background: none; padding: 0; }
+  .m .bubble .think { display: block; border-left: 2px solid var(--border); padding-left: 10px; margin: 4px 0 8px; color: var(--muted); font-size: 13px; }
+  .m .stats { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 5px; }
+  .m.cursor .bubble::after { content: ""; display: inline-block; width: 7px; height: 14px; background: var(--accent); vertical-align: -2px; margin-left: 3px; animation: blink 1s infinite; }
+
+  #ai-row { display: flex; gap: 10px; padding: 12px max(16px, 3vw); padding-bottom: max(12px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 85%, transparent); flex: none; }
+  #ask { flex: 1; border-radius: 100px; padding: 13px 20px; font-size: 15px; }
+
+  /* recovery banner */
+  #rec { display: none; margin: 10px max(16px, 3vw) 0; padding: 12px 16px; border-radius: 14px; background: #fdf6e3; border: 1px solid #eadfbe; flex: none; }
+  #rec.on { display: block; }
+  #rec.bad { background: #fdf0f0; border-color: #f1d4d6; }
+  #rec-head { font-family: var(--mono); font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--warn); display: flex; gap: 8px; align-items: center; }
+  #rec.bad #rec-head { color: var(--err); }
+  #rec-msg { font-size: 13px; margin: 6px 0 8px; line-height: 1.55; }
+  #rec-bar { height: 5px; background: rgba(0,0,0,.07); border-radius: 3px; overflow: hidden; }
+  #rec-bar i { display: block; height: 100%; width: 0; background: var(--warn); border-radius: 3px; transition: width .4s ease; }
+  #rec.bad #rec-bar i { background: var(--err); }
+
+  /* strategy comparison */
+  #cmp-wrap { padding: 0 2px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 10.5px; }
+  th { text-align: right; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; padding: 0 0 5px; font-size: 9.5px; }
+  th:first-child, td:first-child { text-align: left; }
+  td { text-align: right; padding: 4px 0; border-top: 1px solid var(--border); color: var(--muted); }
+  tr.win td { color: var(--accent); font-weight: 500; }
+  tr.dead td { color: var(--faint); }
+  #why { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 8px; line-height: 1.6; overflow-wrap: anywhere; }
+  #why ul { margin: 0; padding-left: 14px; }
+
+  #toasts { position: fixed; top: 70px; right: max(20px, 3vw); z-index: 60; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .toast { display: flex; align-items: center; gap: 9px; background: var(--text); color: var(--bg); font-family: var(--mono); font-size: 12px; padding: 10px 16px; border-radius: 100px; box-shadow: 0 10px 30px rgba(20,21,26,.2); animation: toastin .45s cubic-bezier(.2,.8,.2,1) both, toastout .4s ease-in 3.6s both; }
+  .toast::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+  @keyframes toastin { from { opacity: 0; transform: translateX(24px) scale(.96); } to { opacity: 1; transform: none; } }
+  @keyframes toastout { to { opacity: 0; transform: translateY(-8px); } }
+
+  details.adv { border-top: 1px dashed var(--border); padding-top: 8px; }
+  details.adv summary { font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); cursor: pointer; list-style: none; }
+  details.adv summary::-webkit-details-marker { display: none; }
+  details.adv summary::before { content: "▸ "; }
+  details.adv[open] summary::before { content: "▾ "; }
+  details.adv > div { padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+
+  @media (max-width: 860px) {
+    header { padding: 10px 14px; }
+    .tagline { display: none; }
+    #room-screen { flex-direction: column; }
+    #side { width: auto; flex: none; border-right: none; border-bottom: 1px solid var(--border); padding: 10px 12px; gap: 8px; overflow: visible; background: var(--panel); }
+    #side-room { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 12px; }
+    #side-code { font-size: 20px; letter-spacing: 5px; }
+    #qr-wrap, #cluster-bar, #side > .side-k { display: none; }
+    input, select, textarea { font-size: 16px; }   /* iOS zooms into anything smaller */
+    #peers { flex-direction: row; overflow-x: auto; gap: 8px; padding-bottom: 2px; scrollbar-width: none; }
+    #peers::-webkit-scrollbar { display: none; }
+    .peer-card { min-width: 158px; }
+    .m { max-width: 88%; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<header><h1>AI Swarm</h1><span class="tag">Team SE7EN</span></header>
-<div class="sub">Many devices, one model &mdash; and it keeps running even if one of them walks away.</div>
 
-<div class="card" id="joinCard">
-  <h2>Join a room</h2>
-  <div class="bar">
-    <input type="text" id="name" placeholder="this device's name">
-    <input type="text" id="room" placeholder="code" maxlength="8" style="max-width:100px;text-transform:uppercase">
-    <button id="go">Join</button>
+<header>
+  <div class="logo"><a href="./">AI<em>Swarm</em></a></div>
+  <span class="tagline">mesh inference</span>
+  <div class="spacer"></div>
+  <button id="room-badge" title="copy the join link">····</button>
+</header>
+
+<!-- ============================ join ============================ -->
+<div id="join-screen">
+  <div class="kicker">START OR JOIN</div>
+  <h1>Many devices,<br><em>one model</em>.</h1>
+  <p class="blurb">Leave the code blank to open a new room. Open the link on a second device to see the point.</p>
+
+  <div class="join-row">
+    <input type="text" id="name" placeholder="name this device" autocomplete="off">
+    <input type="text" id="room" placeholder="code" maxlength="8" autocomplete="off">
+    <button class="primary" id="go">join →</button>
   </div>
-  <div class="bar" style="margin-top:8px">
-    <select id="model" style="flex:1"></select>
-    <select id="ctx" title="context window — costs KV memory on every device, and splits across them">
-      <option value="">context: model default</option>
-      <option value="1024">1024 tokens</option>
-      <option value="2048">2048 tokens</option>
-      <option value="4096">4096 tokens</option>
-    </select>
-  </div>
-  <div class="dim" style="font-size:11px;margin-top:8px" id="modelWhy"></div>
-  <div class="dim" style="font-size:11px;margin-top:4px" id="ctxWhy"></div>
-  <div class="dim" style="font-size:11px;margin-top:4px">Leave the code blank to open a new room. Opening a join link picks the model and context for you.</div>
-</div>
+  <div class="note" id="join-status"></div>
 
-<div class="card hide" id="roomCard">
-  <h2>Room <span id="sig" class="dim">connecting</span></h2>
-  <div class="row"><span class="k">code</span><span class="v" id="code">—</span></div>
-  <div class="row"><span class="k">this device</span><span class="v" id="myspeed">measuring…</span></div>
-  <div class="slider">
-    <span class="dim" style="font-size:11px">I&nbsp;pledge</span>
-    <input type="range" id="pledge" min="150" max="4096" step="10" value="2048">
-    <span class="val" id="pledgeVal">2.0 GB</span>
-  </div>
-  <div class="join" id="joinurl"></div>
-</div>
-
-<div class="card hide" id="devCard">
-  <h2>Devices <span id="ndev" class="dim"></span></h2>
-  <div id="devs"></div>
-  <div class="bar" style="margin-top:12px">
-    <select id="strategy" title="placement strategy">
-      <option value="optimal">optimal — measured cost, solved</option>
-      <option value="memory">memory-weighted (exo)</option>
-      <option value="compute">compute-weighted</option>
-      <option value="even">even split</option>
-      <option value="solo">solo</option>
-    </select>
-    <button id="start">Start the swarm</button>
-    <button id="reset" class="ghost hide">New conversation</button>
-    <button id="kill" class="danger hide">Drop a device</button>
-  </div>
-  <div class="pbar hide" id="loadBar"><i></i></div>
-  <div class="dim hide" id="loadTxt" style="font-size:11px;margin-top:5px"></div>
-</div>
-
-<div class="card hide" id="cmpCard">
-  <h2>What each strategy would do <span class="dim" id="cmpNote">predicted</span></h2>
-  <table id="cmp"></table>
-  <div class="why" id="why" style="margin-top:10px"></div>
-</div>
-
-<div class="card hide" id="recCard" style="border-color:#4a3a12;background:#1c1710">
-  <h2 style="color:var(--warn)">Recovery <span id="recPhase" class="dim"></span></h2>
-  <div id="recMsg" style="font-size:14px"></div>
-  <div class="pbar" id="recBar"><i style="background:var(--warn)"></i></div>
-</div>
-
-<div class="card hide" id="chatCard">
-  <h2>Conversation <span id="activeModel" class="dim"></span></h2>
-  <div id="chat"></div>
-  <div class="bar" style="margin-top:10px">
-    <input type="text" id="ask" placeholder="ask the swarm something" autocomplete="off">
-    <button id="send">Send</button>
+  <div class="setup">
+    <div class="setup-k">what this room runs</div>
+    <div class="setup-row">
+      <select id="model"></select>
+      <select id="ctx" title="context window — costs KV memory on every device, and splits across them">
+        <option value="">context: model default</option>
+        <option value="1024">1024 tokens</option>
+        <option value="2048">2048 tokens</option>
+        <option value="4096">4096 tokens</option>
+      </select>
+    </div>
+    <div class="note" id="modelWhy"></div>
+    <div class="note" id="ctxWhy"></div>
+    <div class="note" id="deliveryWhy"></div>
+    <div id="ready-check"><span class="dot"></span><span id="ready-text">checking this device…</span></div>
   </div>
 </div>
 
-<div class="card hide" id="statCard">
-  <h2>Live measurement <span class="dim" id="vsPred"></span></h2>
-  <div class="strip">
-    <div><b id="s-tps">—</b><span>tokens / sec</span></div>
-    <div><b id="s-pred">—</b><span>predicted</span></div>
-    <div><b id="s-tok">—</b><span>tokens</span></div>
-    <div><b id="s-hop">—</b><span>median lap</span></div>
-    <div><b id="s-dev">—</b><span>in chain</span></div>
-    <div><b id="s-lay">—</b><span>my layers</span></div>
-    <div><b id="s-ctx">—</b><span>context used</span></div>
+<!-- ============================ room ============================ -->
+<div id="room-screen" class="hide">
+  <aside id="side">
+    <div id="side-room">
+      <div class="side-k">room code</div>
+      <div id="side-code" title="click to copy the join link">····</div>
+      <div class="side-hint" id="side-hint">click to copy the join link</div>
+      <button id="qr-toggle">show QR</button>
+      <div id="qr-wrap"></div>
+    </div>
+
+    <div class="side-k">devices <span id="ndev"></span></div>
+    <div id="peers"></div>
+
+    <div id="ctrl">
+      <div class="pledge-row">
+        <span>pledge</span>
+        <input type="range" id="pledge" min="150" max="4096" step="10" value="2048">
+        <span class="val" id="pledgeVal">2.0 GB</span>
+      </div>
+      <button class="primary" id="start">start the swarm</button>
+      <button id="reset" class="hide">new conversation</button>
+
+      <details class="adv">
+        <summary>placement</summary>
+        <div>
+          <select id="strategy" title="placement strategy">
+            <option value="optimal">optimal — measured cost, solved</option>
+            <option value="memory">memory-weighted (exo)</option>
+            <option value="compute">compute-weighted</option>
+            <option value="even">even split</option>
+            <option value="solo">solo</option>
+          </select>
+          <div id="cmp-wrap"><table id="cmp"></table><div id="why"></div></div>
+          <button id="kill" class="danger hide">drop a device (test recovery)</button>
+        </div>
+      </details>
+    </div>
+
+    <div id="cluster-bar"></div>
+  </aside>
+
+  <div id="chatpane">
+    <div id="chat-log"></div>
+
+    <div id="rec">
+      <div id="rec-head"><span id="rec-phase">recovering</span></div>
+      <div id="rec-msg"></div>
+      <div id="rec-bar"><i></i></div>
+    </div>
+
+    <div id="chat-body">
+      <div id="ai-empty">
+        <div class="big">Nobody is holding the model yet.</div>
+        <div>Invite a device with the code, then press <b>start the swarm</b>.</div>
+      </div>
+      <div id="load-card">
+        <div class="lc-k">LOADING <span id="lc-model"></span></div>
+        <div id="lc-rows"></div>
+        <div class="lc-note" id="lc-note"></div>
+      </div>
+      <div id="ai-output"></div>
+    </div>
+
+    <div id="ai-row" class="hide">
+      <input type="text" id="ask" placeholder="ask the swarm something" autocomplete="off">
+      <button class="primary" id="send">send</button>
+    </div>
   </div>
 </div>
 
-<div class="card"><h2>Log</h2><div id="log"></div></div>
+<div id="toasts"></div>
 
 <script type="module">
 import { Room, MODELS } from "./room/room.js";
-import { availableModels } from "./models/registry.mjs";
+import { availableModels, capabilityGap } from "./models/registry.mjs";
+import { deliverableUnder, originLabel } from "./models/delivery.mjs";
+import { loadConfig } from "./room/config.js";
+import { renderStreaming } from "./room/markdown.js";
+import { svg as qrSvg } from "./room/qr.js";
 
 const $ = (id) => document.getElementById(id);
 const show = (id, on = true) => $(id).classList.toggle("hide", !on);
 const MB = 2 ** 20;
+const fmtBytes = (b) => b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + " GB" : (b / MB).toFixed(0) + " MB";
+
+// The log is a strip above the chat now rather than a card of its own: it is
+// diagnostics, and it should be readable without being the loudest thing on screen.
 const log = (s, cls = "") => {
   const d = document.createElement("div");
   if (cls) d.className = cls;
   d.textContent = new Date().toLocaleTimeString().slice(0, 8) + "  " + s;
-  $("log").prepend(d);
+  $("chat-log").prepend(d);
+  while ($("chat-log").children.length > 60) $("chat-log").lastChild.remove();
 };
-const fmtBytes = (b) => b >= 2 ** 30 ? (b / 2 ** 30).toFixed(2) + " GB" : (b / MB).toFixed(0) + " MB";
+// Anything worth interrupting someone for gets a toast as well as a log line.
+const toast = (text) => {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = text;
+  $("toasts").appendChild(t);
+  setTimeout(() => t.remove(), 4200);
+};
 
 const hash = new URLSearchParams(location.hash.slice(1));
 $("room").value = (hash.get("r") || "").toUpperCase();
@@ -187,63 +411,107 @@ $("name").value = localStorage.getItem("swarm-name") ||
   (/Android/i.test(navigator.userAgent) ? "Android" :
    /iPhone|iPad/i.test(navigator.userAgent) ? "iPhone" : "PC");
 
-// Model selector: status tags follow the blueprint's tiers (verified / experimental
-// / planned / unavailable-on-this-device) rather than presenting every descriptor
-// as equally ready. A join link carries the model in its hash, so following one
-// picks it for you — the dropdown only matters for the device that starts the room.
+// ---------------------------------------------------------------- model picker
 const STATUS_LABEL = { verified: "verified", experimental: "experimental", planned: "planned", unavailable: "unavailable" };
+let lastCaps = { webgpu: typeof navigator !== "undefined" && !!navigator.gpu };
+let deployCfg = null;
+
 function renderModelOptions(caps) {
   const wanted = hash.get("model") || $("model").value || "smollm2-135m";
   $("model").innerHTML = "";
   for (const m of availableModels(caps)) {
     const opt = document.createElement("option");
     opt.value = m.id;
-    opt.textContent = `${m.label} — ${STATUS_LABEL[m.effectiveStatus]}`;
-    opt.disabled = m.effectiveStatus === "unavailable" || m.effectiveStatus === "planned";
+    // Two independent reasons a model can be off. "unavailable" is about this
+    // device (no WebGPU, no shader-f16); "not on this deployment" is about where
+    // the weights would have to come from. The fixes are completely different.
+    const preempted = m.effectiveStatus === "planned" || m.effectiveStatus === "unavailable";
+    const deliver = deployCfg && !preempted ? deliverableUnder(m, deployCfg.delivery, deployCfg.models) : { ok: true };
+    opt.textContent = `${m.label} — ${deliver.ok ? STATUS_LABEL[m.effectiveStatus] : "not on this deployment"}`;
+    opt.disabled = !deliver.ok || preempted;
     $("model").appendChild(opt);
   }
-  if ([...$("model").options].some((o) => o.value === wanted && !o.disabled)) $("model").value = wanted;
+  const enabled = [...$("model").options].filter((o) => !o.disabled);
+  $("model").value = enabled.some((o) => o.value === wanted) ? wanted : (enabled[0]?.value || "");
   updateModelWhy();
+  updateReadyCheck();
 }
 function updateModelWhy() {
-  const id = $("model").value;
-  const m = availableModels(lastCaps).find((x) => x.id === id);
-  $("modelWhy").textContent = m ? (m.unavailableReason ? "Unavailable: " + m.unavailableReason : m.blockedOn ? "Blocked on: " + m.blockedOn : m.why || "") : "";
+  const m = availableModels(lastCaps).find((x) => x.id === $("model").value);
+  if (!m) { $("modelWhy").textContent = ""; return; }
+  const preempted = m.effectiveStatus === "planned" || m.effectiveStatus === "unavailable";
+  const deliver = deployCfg && !preempted ? deliverableUnder(m, deployCfg.delivery, deployCfg.models) : { ok: true };
+  $("modelWhy").textContent =
+    !deliver.ok ? "Not on this deployment: " + deliver.why
+    : m.unavailableReason ? "Unavailable: " + m.unavailableReason
+    : m.blockedOn ? "Blocked on: " + m.blockedOn
+    : m.why || "";
 }
-// The context window is the most *splittable* resource in the room: the KV cache is
-// held per layer, so a device only pays for the layers it holds. Doubling the window
-// roughly doubles KV, but in a two-way split each device carries only half of that.
-// Showing the estimate up front stops "4096" from being a blind bet on stage.
+// The context window is the most splittable resource in the room: the KV cache is
+// held per layer, so a device only pays for the layers it holds.
 function updateCtxWhy() {
   const m = availableModels(lastCaps).find((x) => x.id === $("model").value);
   const chosen = +$("ctx").value || m?.maxSeqDefault || 512;
   if (!m || m.engineKind !== "dense-gguf") { $("ctxWhy").textContent = ""; return; }
-  // 8 KB per position per layer for every Qwen3 rung here (8 KV heads x 128 dims,
-  // k and v, f32). Weights are not included — this is the delta the window costs.
   const kvAllMB = (8192 * chosen * (m.id === "qwen3-4b" ? 36 : 28)) / 2 ** 20;
   $("ctxWhy").textContent =
     `${chosen} tokens → ~${kvAllMB.toFixed(0)} MB of KV cache total, ` +
-    `~${(kvAllMB / 2).toFixed(0)} MB per device on a 2-way split, ` +
-    `~${(kvAllMB / 3).toFixed(0)} MB on a 3-way.`;
+    `~${(kvAllMB / 2).toFixed(0)} MB per device on a 2-way split.`;
 }
-let lastCaps = { webgpu: typeof navigator !== "undefined" && !!navigator.gpu };
+function updateDeliveryWhy(resolved) {
+  if (!deployCfg) { $("deliveryWhy").textContent = ""; return; }
+  if (resolved) {
+    $("deliveryWhy").textContent = `Weights: ${originLabel(resolved.origin)}`;
+    return;
+  }
+  const planned = deployCfg.delivery === "auto"
+    ? "this host if it carries a mirror, else the Hugging Face CDN"
+    : originLabel(deployCfg.delivery);
+  $("deliveryWhy").textContent = `Weights: ${planned}.`;
+}
+
+// The useful half of probe.html, folded into the join screen: a visitor should not
+// have to find a separate diagnostics page to learn their browser cannot take part.
+function updateReadyCheck() {
+  const m = availableModels(lastCaps).find((x) => x.id === $("model").value);
+  const dot = $("ready-check").firstElementChild;
+  if (!m) return;
+  const gap = capabilityGap(m, lastCaps);
+  dot.className = "dot " + (gap ? "bad" : lastCaps.shaderF16 === undefined ? "" : "ok");
+  $("ready-text").textContent = gap
+    ? `This device cannot run ${m.label} — ${gap}. It can still watch the room.`
+    : lastCaps.shaderF16 === undefined ? "checking this device…"
+    : `This device can run ${m.label}.`;
+}
+
 if (hash.get("ctx")) $("ctx").value = hash.get("ctx");
 renderModelOptions(lastCaps);
 updateCtxWhy();
-$("model").onchange = () => { updateModelWhy(); updateCtxWhy(); };
+loadConfig().then((cfg) => {
+  deployCfg = cfg;
+  renderModelOptions(lastCaps);
+  updateDeliveryWhy(null);
+  if (cfg.warning) log(cfg.warning, "bad");
+  if (cfg.iceWarning) log(cfg.iceWarning, "warn");
+}).catch(() => {});
+$("model").onchange = () => { updateModelWhy(); updateCtxWhy(); updateReadyCheck(); };
 $("ctx").onchange = updateCtxWhy;
-// Refine with the real shader-f16 capability once an adapter request resolves,
-// without blocking the initial render on a GPU round trip.
 if (navigator.gpu) {
   navigator.gpu.requestAdapter().then((a) => {
     lastCaps = { webgpu: !!a, shaderF16: a ? a.features.has("shader-f16") : false };
     renderModelOptions(lastCaps);
-  }).catch(() => {});
+  }).catch(() => { lastCaps = { webgpu: false, shaderF16: false }; renderModelOptions(lastCaps); });
+} else {
+  lastCaps = { webgpu: false, shaderF16: false };
+  renderModelOptions(lastCaps);
 }
 
-let room = null, myRange = null, answerEl = null, predicted = null;
+// ---------------------------------------------------------------- state
+let room = null, myRange = null, answerEl = null, answerMd = "", predicted = null;
 const rangeOf = new Map();
 const droppedIds = new Set();
+const loadPct = new Map();          // peer id -> % , for the load card
+let joinUrl = "";
 
 $("pledge").oninput = () => {
   const mb = +$("pledge").value;
@@ -260,19 +528,24 @@ function renderDevices() {
   if (!room) return;
   const peers = room.peers;
   $("ndev").textContent = `· ${peers.length + 1}`;
-  const me = { id: room.id, name: ($("name").value || "me") + " (you)", ready: true, self: true,
+  const me = { id: room.id, name: ($("name").value || "this device"), ready: true, self: true,
                meta: room.myProfile ? { msPerLayer: room.myProfile.msPerLayer, budgetBytes: room.pledgeBytes } : null };
-  $("devs").innerHTML = [me, ...peers].map((p) => {
+  $("peers").innerHTML = [me, ...peers].map((p) => {
     const r = p.self ? myRange : rangeOf.get(p.id);
     const out = droppedIds.has(p.id);
     const ms = p.meta?.msPerLayer;
-    return `<div class="dev">
-      <span class="dot ${out ? "out" : p.self ? "me" : p.ready ? "on" : ""}"></span>
-      <span class="nm">${p.name}</span>
-      ${ms ? `<span class="chip spd">${ms.toFixed(1)} ms/layer</span>` : ""}
-      ${p.meta?.budgetBytes ? `<span class="chip spd">${fmtBytes(p.meta.budgetBytes)}</span>` : ""}
-      ${out ? `<span class="chip out">stood down</span>` : r ? `<span class="chip lay">layers ${r[0]}–${r[1] - 1}</span>` : ""}
-      <span class="rtt">${p.self ? "" : p.rtt == null ? "—" : p.rtt + " ms"}</span>
+    const cannot = p.meta?.canRun === false;
+    const dot = out ? "out" : cannot ? "warn" : p.self ? "me" : p.ready ? "ok" : "";
+    return `<div class="peer-card ${p.self ? "self" : ""} ${out ? "out" : ""}">
+      <div class="peer-name"><span class="dot ${dot}"></span><span class="nm">${p.name}${p.self ? " (you)" : ""}</span></div>
+      <div class="peer-stats">
+        ${ms ? `<span>${ms.toFixed(1)} ms/layer</span>` : ""}
+        ${p.meta?.budgetBytes ? `<span>${fmtBytes(p.meta.budgetBytes)}</span>` : ""}
+        ${p.self || p.rtt == null ? "" : `<span>${p.rtt} ms</span>`}
+        ${cannot ? `<span class="out">cannot run this model</span>`
+          : out ? `<span class="out">stood down</span>`
+          : r ? `<b>layers ${r[0]}–${r[1] - 1}</b>` : ""}
+      </div>
     </div>`;
   }).join("");
 }
@@ -281,38 +554,92 @@ function refreshCompare() {
   if (!room) return;
   const rows = room.compare();
   if (!rows) return;
-  show("cmpCard", true);
   const best = rows.find((r) => r.feasible);
   $("cmp").innerHTML =
-    `<tr><th>strategy</th><th>devices</th><th>tok/s</th><th>per token</th><th>host</th></tr>` +
+    `<tr><th>strategy</th><th>dev</th><th>tok/s</th><th>per token</th></tr>` +
     rows.map((r) => {
-      if (!r.feasible) return `<tr class="dead"><td>${r.strategy}</td><td>—</td><td colspan="3">does not fit</td></tr>`;
-      const cls = r === best ? "win" : "";
-      return `<tr class="${cls}"><td>${r.strategy}</td><td>${r.devices}</td>` +
-             `<td>${r.tokensPerSec.toFixed(2)}</td><td>${r.totalMs.toFixed(0)} ms</td><td>${r.host}</td></tr>`;
+      if (!r.feasible) return `<tr class="dead"><td>${r.strategy}</td><td>—</td><td colspan="2">does not fit</td></tr>`;
+      return `<tr class="${r === best ? "win" : ""}"><td>${r.strategy}</td><td>${r.devices}</td>` +
+             `<td>${r.tokensPerSec.toFixed(2)}</td><td>${r.totalMs.toFixed(0)} ms</td></tr>`;
     }).join("");
   const opt = rows.find((r) => r.strategy === "optimal");
   const mem = rows.find((r) => r.strategy === "memory");
   if (opt?.feasible) {
     predicted = opt.tokensPerSec;
-    $("s-pred").textContent = opt.tokensPerSec.toFixed(2);
     const gain = mem?.feasible ? ` · ${(mem.totalMs / opt.totalMs).toFixed(2)}× vs memory-weighted` : "";
-    $("cmpNote").textContent = "predicted" + gain;
-    $("why").innerHTML = "<ul>" + opt.plan.why.map((w) => `<li>${w}</li>`).join("") + "</ul>";
+    $("why").innerHTML = `<div style="margin-bottom:6px">predicted${gain}</div><ul>` +
+      opt.plan.why.map((w) => `<li>${w}</li>`).join("") + "</ul>";
   }
+  updateClusterBar();
 }
 
-function bubble(cls, who, text) {
+function updateClusterBar() {
+  if (!room) return;
+  const n = (room.chain?.length || 0) + 1;
+  const bits = [`<b>${room.peers.length + 1}</b> device${room.peers.length ? "s" : ""} in the room`];
+  if (room.spec) bits.push(`<b>${room.spec.layers}</b> layers · hidden <b>${room.spec.hidden}</b> · ctx <b>${room.spec.maxSeq}</b>`);
+  if (room.wireEnc) bits.push(`wire <b>${room.wireEnc}</b>`);
+  if (myRange) bits.push(`holding <b>${myRange[1] - myRange[0]}</b> layers`);
+  $("cluster-bar").innerHTML = bits.join("<br>");
+}
+
+// ---------------------------------------------------------------- chat
+function bubble(kind, who, text = "") {
+  $("ai-output").classList.add("on");
+  $("ai-empty").classList.add("hide");
   const d = document.createElement("div");
-  d.className = "msg " + cls;
-  d.innerHTML = `<div class="who"></div><div class="txt"></div>`;
+  d.className = "m " + kind;
+  d.innerHTML = `<div class="who"></div><div class="bubble"></div>`;
   d.children[0].textContent = who;
   d.children[1].textContent = text;
-  $("chat").appendChild(d);
-  $("chat").scrollTop = $("chat").scrollHeight;
-  return d.children[1];
+  $("ai-output").appendChild(d);
+  $("chat-body").scrollTop = $("chat-body").scrollHeight;
+  return d;
+}
+// System notices (context full, cut short, a device leaving) are their own bubble
+// kind rather than a fake answer from the model — they are the room talking, and
+// reading them as model output is how "the model said something odd" starts.
+const sysBubble = (text) => bubble("sys", "swarm", text);
+
+// Model output is Markdown whether or not anyone asked for it. room/markdown.js
+// escapes everything before emitting a tag, which matters here: in a shared room
+// the person reading an answer is not necessarily the person who wrote the prompt.
+function paintAnswer() {
+  if (!answerEl) return;
+  const b = answerEl.children[1];
+  // Qwen3 reasons inside a <think> block before it answers. Show it, but visibly
+  // set apart — it is the model working, not the answer. The closing tag may not
+  // have arrived yet mid-stream, which is why the tail group is optional.
+  const m = /^([\s\S]*?)<think>([\s\S]*?)(?:<\/think>([\s\S]*))?$/.exec(answerMd);
+  b.innerHTML = m
+    ? renderStreaming(m[1]) + `<span class="think">${renderStreaming(m[2])}</span>` + renderStreaming(m[3] || "")
+    : renderStreaming(answerMd);
+  $("chat-body").scrollTop = $("chat-body").scrollHeight;
 }
 
+// ---------------------------------------------------------------- load card
+function renderLoadCard() {
+  if (!room) return;
+  const rows = [];
+  const mine = { id: room.id, name: ($("name").value || "this device") + " (you)", range: myRange, pct: loadPct.get(room.id) ?? 0 };
+  rows.push(mine);
+  for (const p of room.peers) {
+    if (!rangeOf.has(p.id) && !loadPct.has(p.id)) continue;
+    rows.push({ id: p.id, name: p.name, range: rangeOf.get(p.id), pct: loadPct.get(p.id) ?? 0 });
+  }
+  $("lc-rows").innerHTML = rows.map((r) => `
+    <div class="lc-row ${r.pct >= 100 ? "done" : ""}">
+      <div class="n">${r.name}<small>${r.range ? `layers ${r.range[0]}–${r.range[1] - 1}` : "waiting"}</small></div>
+      <div class="bar"><div class="fill" style="width:${r.pct}%"></div></div>
+      <div class="pct">${r.pct >= 100 ? "✓" : r.pct + "%"}</div>
+    </div>`).join("");
+}
+function showLoadCard(on) {
+  $("load-card").classList.toggle("on", on);
+  $("ai-empty").classList.toggle("hide", on || $("ai-output").classList.contains("on"));
+}
+
+// ---------------------------------------------------------------- join
 async function join() {
   const code = ($("room").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "") ||
     Array.from({ length: 4 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
@@ -321,25 +648,30 @@ async function join() {
   const maxSeq = +$("ctx").value || null;
   localStorage.setItem("swarm-name", name);
   $("go").disabled = true;
+  $("join-status").textContent = "connecting…";
+  $("join-status").className = "note";
 
   room = new Room({ code, name, model, maxSeq });
   // Module scope hides `room` from the console otherwise; a support report or a
-  // recovery-correctness check (compare token IDs before/after a kill — see
-  // IMPLEMENTATION_PLAN.md's Phase A) needs to read room.history/room.stats live.
+  // recovery-correctness check needs to read room.history/room.stats live.
   window.__room = room;
 
+  room.on("delivery", (d) => {
+    updateDeliveryWhy(d);
+    log(`weights from ${d.label}${d.probed ? ` (${d.probed.why}, ${d.probed.ms} ms)` : ""}`, "ok");
+  });
+  room.on("cannot-run", ({ why }) => {
+    log("this device cannot run this model: " + why, "warn");
+    toast("this device can't run this model");
+  });
   room.on("roster", () => { renderDevices(); refreshCompare(); });
-  room.on("peer-left", (id, why) => { rangeOf.delete(id); droppedIds.delete(id); log("device left: " + why, "warn"); renderDevices(); refreshCompare(); });
-  room.on("chain-broken", () => {
-    log("CHAIN BROKEN — a device in the pipeline left mid-answer", "bad");
-    bubble("q", "swarm", "A device left the chain mid-answer. Recovering…");
+  room.on("peer-left", (id, why) => {
+    rangeOf.delete(id); droppedIds.delete(id); loadPct.delete(id);
+    log("device left: " + why, "warn"); renderDevices(); refreshCompare();
   });
 
-  room.on("profiling", () => { $("myspeed").textContent = "measuring…"; });
+  room.on("profiling", () => { log("measuring this device…"); });
   room.on("profiled", (p) => {
-    $("myspeed").textContent = `${p.msPerLayer.toFixed(1)} ms/layer · ${(p.macsPerSec / 1e9).toFixed(2)} GMAC/s` +
-      (p.stable ? "" : " (unstable)");
-    $("myspeed").className = "v " + (p.stable ? "ok" : "warn");
     $("pledge").value = Math.round(p.budgetBytes / MB);
     $("pledge").oninput();
     log(`measured: ${p.msPerLayer.toFixed(2)} ms/layer in ${p.probeMs.toFixed(0)} ms`, "ok");
@@ -347,15 +679,12 @@ async function join() {
   });
   room.on("pressure", (s) => log("thermal pressure: " + s, s === "nominal" ? "" : "warn"));
   room.on("calibrated", ({ before, after, drift }) => {
-    $("myspeed").textContent = `${after.toFixed(1)} ms/layer (measured on real layers)`;
-    $("myspeed").className = "v ok";
     log(`calibrated on real layers: ${before.toFixed(1)} → ${after.toFixed(1)} ms/layer (${drift.toFixed(2)}×)`,
         Math.abs(drift - 1) < 0.5 ? "ok" : "warn");
     renderDevices(); refreshCompare();
   });
   room.on("recalibrated", ({ drift }) => {
-    log(`this device is ${drift > 1 ? drift.toFixed(1) + "× SLOWER" : (1 / drift).toFixed(1) + "× faster"} than it measured at join — ` +
-        `re-plan to account for it`, "warn");
+    log(`this device is ${drift > 1 ? drift.toFixed(1) + "× SLOWER" : (1 / drift).toFixed(1) + "× faster"} than it measured at join`, "warn");
   });
 
   room.on("planned", (p) => {
@@ -365,164 +694,176 @@ async function join() {
         `${p.predicted.tokensPerSec.toFixed(2)} tok/s predicted`, "ok");
     refreshCompare();
   });
-  room.on("handoff", (id, name) => log(`${name} is the better host — handing over`, "warn"));
+  room.on("handoff", (id, name) => { log(`${name} is the better host — handing over`, "warn"); toast(name + " will host"); });
   room.on("became-host", () => log("elected host by the planner", "ok"));
-  room.on("stand-by", (why) => {
-    log("standing down: " + why, "warn");
-    show("loadTxt", true);
-    $("loadTxt").textContent = "Not in this plan — " + why;
+  room.on("stand-by", (why) => { log("standing down: " + why, "warn"); toast("not in this plan"); });
+  room.on("worker-failed", (id, why) => {
+    const nm = room.peers.find((p) => p.id === id)?.name || id;
+    log(`${nm} could not load its layers: ${why}`, "bad");
+    toast(nm + " dropped out");
   });
 
   room.on("plan", (plan) => {
     for (const p of plan) { if (p.self) myRange = p.range; else rangeOf.set(p.id, p.range); }
-    renderDevices();
+    $("lc-model").textContent = MODELS[room.model].label;
+    $("lc-note").textContent = "Each device pulls only the layers it was dealt, not the whole model.";
+    showLoadCard(true); renderLoadCard(); renderDevices(); updateClusterBar();
   });
   room.on("loading", ({ range, pct }) => {
-    show("loadBar", true); show("loadTxt", true);
-    $("loadBar").firstElementChild.style.width = pct + "%";
-    $("loadTxt").textContent = `loading layers ${range[0]}–${range[1] - 1} · ${pct}%`;
     myRange = range;
+    loadPct.set(room.id, pct);
+    // Also set here, not only in the "plan" handler: that event is emitted by
+    // _deal(), which only the host runs, so a worker would otherwise show a load
+    // card with a blank header and no explanation of what it is downloading.
+    $("lc-model").textContent = MODELS[room.model].label;
+    if (!$("lc-note").textContent) $("lc-note").textContent = "Each device pulls only the layers it was dealt, not the whole model.";
     $("start").disabled = true;
-    $("start").textContent = room.isHost ? "Swarm running" : "Holding layers";
+    $("start").textContent = room.isHost ? "swarm running" : "holding layers";
+    showLoadCard(true); renderLoadCard();
   });
+  room.on("progress", (from, pct) => { loadPct.set(from, pct); renderLoadCard(); });
   room.on("loaded", ({ range, mb, cache }) => {
+    loadPct.set(room.id, 100);
     let how = `${mb.toFixed(1)} MB`;
     if (cache && (cache.hits || cache.misses)) {
       const cachedMB = cache.bytesFromCache / MB;
-      how += cache.hits && !cache.misses ? ` — all from cache, no download`
+      how += cache.hits && !cache.misses ? " — all from cache, no download"
            : cache.hits ? ` — ${cachedMB.toFixed(0)} MB from cache, ${cache.misses} shard(s) downloaded`
-           : ` downloaded${cache.storeFailed ? " (cache full — will re-download next time)" : ", cached for next time"}`;
+           : `${cache.storeFailed ? " (cache full — will re-download next time)" : ", cached for next time"}`;
     }
     log(`loaded layers ${range[0]}–${range[1] - 1} (${how})`, "ok");
-    $("s-lay").textContent = range[1] - range[0];
-    renderDevices();
+    renderLoadCard(); renderDevices(); updateClusterBar();
   });
-  room.on("worker-ready", (id, range) => { rangeOf.set(id, range); renderDevices(); });
+  room.on("worker-ready", (id, range) => { rangeOf.set(id, range); loadPct.set(id, 100); renderLoadCard(); renderDevices(); });
+  room.on("waiting-for-workers", (n) => { $("lc-note").textContent = `Waiting for ${n} device${n > 1 ? "s" : ""} to finish. Slow connections are fine — this waits on silence, not the clock.`; });
+  room.on("kept-range", (r) => log(`kept layers ${r[0]}–${r[1] - 1} — no re-download`, "ok"));
+
   room.on("ready", () => {
-    show("loadBar", false); show("loadTxt", false);
-    show("chatCard", true); show("statCard", true); show("reset", true);
+    showLoadCard(false);
+    $("ai-output").classList.add("on");
+    $("ai-empty").classList.add("hide");
+    show("ai-row", true); show("reset", true);
     show("kill", room.isHost && room.chain.length > 0);
-    $("activeModel").textContent = MODELS[room.model].label;
-    $("s-dev").textContent = (room.chain?.length || 0) + 1;
     log("swarm online", "ok");
+    toast("swarm online");
+    updateClusterBar();
+    $("ask").focus();
   });
-  room.on("waiting-for-workers", (n) => log(`waiting for ${n} worker${n > 1 ? "s" : ""} to load`));
 
   room.on("gen-start", (text, by) => {
-    bubble("q", by === "you" ? "you asked" : by + " asked", text);
-    answerEl = bubble("a", "swarm", "");
-    answerEl.parentElement.classList.add("cursor");
+    bubble("user", by === "you" ? "you" : by, text);
+    answerMd = "";
+    answerEl = bubble("bot", MODELS[room.model].label, "");
+    answerEl.classList.add("cursor");
   });
   room.on("token", (piece) => {
-    if (!answerEl) answerEl = bubble("a", "swarm", "");
-    answerEl.textContent += piece;
-    $("chat").scrollTop = $("chat").scrollHeight;
+    if (!answerEl) { answerMd = ""; answerEl = bubble("bot", "swarm", ""); answerEl.classList.add("cursor"); }
+    answerMd += piece;
+    paintAnswer();
   });
-  room.on("context-full", ({ used, limit, turns, roomLeft }) => {
-    bubble("q", "swarm", `Not enough context left to answer — ${used} of ${limit} positions used across ` +
-      `${turns} turn${turns === 1 ? "" : "s"}, leaving ${Math.max(0, roomLeft ?? 0)} for a reply. ` +
-      `Refusing rather than starting an answer that would stop mid-sentence. ` +
-      `Press "New conversation", or start a room with a larger context.`);
-    log(`context full: ${used}/${limit}, ${roomLeft} left for a reply`, "warn");
-  });
-  // "cap" means the model was still going when it hit its per-model token budget;
-  // "context" means the window itself ran out. Saying which one is the difference
-  // between a knob to turn and a limit to respect.
-  room.on("cut-short", ({ why, tokens, cap, requested }) => {
-    if (why === "context") {
-      bubble("q", "swarm", `Answer cut short after ${tokens} tokens — the context window ran out. Start a room with a larger context to finish thoughts like this one.`);
-      log(`cut short at ${tokens}: context exhausted (cap lowered to ${cap} from ${requested})`, "warn");
-    } else {
-      bubble("q", "swarm", `Answer cut short after ${tokens} tokens — this model's generation cap. There is still context left; the cap is the limit here.`);
-      log(`cut short at ${tokens}: hit the ${cap}-token generation cap`, "warn");
+  room.on("gen-done", (s) => {
+    answerEl?.classList.remove("cursor");
+    if (answerEl) {
+      const st = document.createElement("div");
+      st.className = "stats";
+      st.textContent = `${s.tokens} tokens · ${s.tps ?? "—"} tok/s` +
+        (s.medianHopMs ? ` · median lap ${s.medianHopMs} ms` : " · solo") +
+        (s.context ? ` · context ${s.context.used}/${s.context.limit}` : "") +
+        (predicted && s.tps ? ` · predicted ${predicted.toFixed(2)}` : "");
+      answerEl.appendChild(st);
     }
+    answerEl = null; answerMd = "";
+    log(`${s.tokens} tokens in ${s.ms} ms — ${s.tps} tok/s` + (s.medianHopMs ? `, median lap ${s.medianHopMs} ms` : ""), "ok");
+    $("chat-body").scrollTop = $("chat-body").scrollHeight;
+  });
+
+  room.on("context-full", ({ used, limit, turns, roomLeft }) => {
+    sysBubble(`Not enough context left to answer — ${used} of ${limit} positions used across ` +
+      `${turns} turn${turns === 1 ? "" : "s"}, leaving ${Math.max(0, roomLeft ?? 0)} for a reply. ` +
+      `Press "new conversation", or start a room with a larger context.`);
+    log(`context full: ${used}/${limit}`, "warn");
+  });
+  room.on("cut-short", ({ why, tokens, cap }) => {
+    sysBubble(why === "context"
+      ? `Answer cut short after ${tokens} tokens — the context window ran out.`
+      : `Answer cut short after ${tokens} tokens — this model's ${cap}-token generation cap. There is still context left.`);
+    log(`cut short at ${tokens}: ${why}`, "warn");
   });
   room.on("context-changed", ({ from, to }) => log(`context window ${from ?? "default"} → ${to} (host's choice)`, "warn"));
-  room.on("truncated", () => log("answer cut short — hit the context limit", "warn"));
-
-  room.on("gen-done", (s) => {
-    answerEl?.parentElement.classList.remove("cursor");
-    answerEl = null;
-    $("s-tps").textContent = s.tps ?? "—";
-    $("s-tok").textContent = s.tokens;
-    $("s-hop").textContent = s.medianHopMs == null ? "solo" : s.medianHopMs + " ms";
-    if (s.context) {
-      $("s-ctx").textContent = `${s.context.used}/${s.context.limit}`;
-      $("s-ctx").style.color = s.context.frac > 0.85 ? "var(--warn)" : "";
-    }
-    if (predicted && s.tps) {
-      const err = ((s.tps - predicted) / predicted) * 100;
-      $("vsPred").textContent = `model was ${err >= 0 ? "+" : ""}${err.toFixed(0)}% off`;
-      $("vsPred").className = Math.abs(err) < 25 ? "ok" : "warn";
-    }
-    log(`${s.tokens} tokens in ${s.ms} ms — ${s.tps} tok/s` + (s.medianHopMs ? `, median lap ${s.medianHopMs} ms` : ""), "ok");
-  });
-  room.on("reset", () => { $("chat").innerHTML = ""; log("conversation reset"); });
+  room.on("reset", () => { $("ai-output").innerHTML = ""; log("conversation reset"); });
 
   // ---- recovery
-  const recBar = () => $("recBar").firstElementChild;
+  const recBar = () => $("rec-bar").firstElementChild;
+  const rec = (phase, msg, pct, bad = false) => {
+    $("rec").classList.add("on");
+    $("rec").classList.toggle("bad", bad);
+    $("rec-phase").textContent = phase;
+    $("rec-msg").textContent = msg;
+    recBar().style.width = pct + "%";
+  };
   room.on("chain-broken", (id) => {
     const nm = room.peers.find((p) => p.id === id)?.name || id;
     log(`${nm} left the chain mid-answer`, "bad");
+    toast(nm + " left mid-answer");
+    sysBubble("A device left the chain mid-answer. Recovering…");
   });
   room.on("dropping", (id, nm) => log(`asking ${nm} to leave — this is the real failure path`, "warn"));
-  room.on("asked-to-leave", () => { log("this device was dropped from the room", "warn"); show("recCard", true); $("recMsg").textContent = "You were dropped from the room. Reload to rejoin."; });
-  room.on("host-lost", () => {
-    show("recCard", true);
-    $("recPhase").textContent = "cannot continue";
-    $("recMsg").textContent = "The host left. The conversation, the tokenizer and the LM head lived there, so this room cannot heal itself. Someone must start a new one.";
-    log("host lost — unrecoverable from a worker", "bad");
-  });
-  room.on("recovering", ({ why, tokens }) => {
-    show("recCard", true);
-    $("recPhase").textContent = "re-planning";
-    $("recMsg").textContent = `A device left mid-answer (${why}). Re-planning over the devices that remain and rebuilding ${tokens} tokens of state.`;
-    recBar().style.width = "8%";
-  });
-  room.on("kept-range", (r) => log(`kept layers ${r[0]}–${r[1] - 1} — no re-download`, "ok"));
-  room.on("replaying", ({ total }) => {
-    $("recPhase").textContent = "replaying";
-    $("recMsg").textContent = `Re-running ${total} tokens so the new layer holder has a real cache.`;
-    recBar().style.width = "25%";
-  });
-  room.on("replay-progress", ({ done, total }) => {
-    recBar().style.width = (25 + (done / total) * 70).toFixed(0) + "%";
-    $("recPhase").textContent = `replaying ${done}/${total}`;
-  });
+  room.on("asked-to-leave", () => rec("dropped", "This device was dropped from the room. Reload to rejoin.", 100, true));
+  room.on("host-lost", () => rec("cannot continue",
+    "The host left. The conversation, the tokenizer and the LM head lived there, so this room cannot heal itself. Someone must start a new one.", 100, true));
+  room.on("recovering", ({ why, tokens }) =>
+    rec("re-planning", `A device left mid-answer (${why}). Re-planning over what remains and rebuilding ${tokens} tokens of state.`, 8));
+  room.on("replaying", ({ total }) => rec("replaying", `Re-running ${total} tokens so the new layer holder has a real cache.`, 25));
+  room.on("replay-progress", ({ done, total }) => rec(`replaying ${done}/${total}`, $("rec-msg").textContent, 25 + (done / total) * 70));
   room.on("recovered", ({ ms, devices, tokens }) => {
-    recBar().style.width = "100%";
-    $("recPhase").textContent = "done";
-    $("recMsg").textContent = `Recovered in ${(ms / 1000).toFixed(1)} s across ${devices} device${devices > 1 ? "s" : ""}, ${tokens} tokens of state rebuilt. The answer continues from where it stopped.`;
+    rec("done", `Recovered in ${(ms / 1000).toFixed(1)} s across ${devices} device${devices > 1 ? "s" : ""}, ${tokens} tokens rebuilt. The answer continues where it stopped.`, 100);
     log(`recovered in ${(ms / 1000).toFixed(1)}s — answer continues`, "ok");
-    setTimeout(() => show("recCard", false), 6000);
+    toast(`recovered in ${(ms / 1000).toFixed(1)}s`);
+    setTimeout(() => $("rec").classList.remove("on"), 6500);
   });
-  room.on("recover-failed", (why) => {
-    $("recPhase").textContent = "failed";
-    $("recMsg").textContent = "Could not recover: " + why;
-    recBar().style.width = "100%";
-    recBar().style.background = "var(--bad)";
-    log("recovery failed: " + why, "bad");
-  });
+  room.on("recover-failed", (why) => rec("failed", "Could not recover: " + why, 100, true));
   room.on("host-suboptimal", () => log("a faster device is now available to host — will re-plan after this answer", "warn"));
-  room.on("error", (e) => log("error: " + e, "bad"));
+  room.on("error", (e) => { log("error: " + e, "bad"); $("join-status").textContent = e; $("join-status").className = "note err"; });
 
   try {
     const { room: code2 } = await room.join({ pledgeBytes: +$("pledge").value * MB });
-    $("code").textContent = code2;
-    $("sig").textContent = "connected";
-    $("sig").className = "ok";
-    const hashOut = "r=" + code2 + (model === "smollm2-135m" ? "" : "&model=" + model) +
-      (maxSeq ? "&ctx=" + maxSeq : "");
+    const hashOut = "r=" + code2 + (model === "smollm2-135m" ? "" : "&model=" + model) + (maxSeq ? "&ctx=" + maxSeq : "");
     location.hash = hashOut;
-    $("joinurl").textContent = "join link: " + location.origin + location.pathname + "#" + hashOut;
-    show("joinCard", false); show("roomCard", true); show("devCard", true);
+    joinUrl = location.origin + location.pathname + "#" + hashOut;
+
+    $("side-code").textContent = code2;
+    $("room-badge").textContent = code2;
+    $("room-badge").style.display = "inline-block";
+    show("join-screen", false);
+    show("room-screen", true);
     log("joined room " + code2, "ok");
-    renderDevices();
+    renderDevices(); updateClusterBar();
   } catch (e) {
     log("join failed: " + e.message, "bad");
+    $("join-status").textContent = "could not join: " + e.message;
+    $("join-status").className = "note err";
     $("go").disabled = false;
   }
 }
+
+// ---------------------------------------------------------------- controls
+const copyJoin = async () => {
+  try { await navigator.clipboard.writeText(joinUrl); toast("join link copied"); }
+  catch { toast(joinUrl); }
+};
+$("side-code").onclick = copyJoin;
+$("room-badge").onclick = copyJoin;
+$("qr-toggle").onclick = () => {
+  const wrap = $("qr-wrap");
+  const on = !wrap.classList.contains("on");
+  wrap.classList.toggle("on", on);
+  $("qr-toggle").textContent = on ? "hide QR" : "show QR";
+  // Rendered locally by room/qr.js — the join link never goes to a QR service.
+  if (on && !wrap.innerHTML) {
+    try { wrap.innerHTML = qrSvg(joinUrl, { scale: 4, margin: 2, dark: "#16171c", light: "#fbfaf5" }); }
+    catch (e) { wrap.textContent = "could not draw a QR for this link"; }
+  }
+};
 
 $("go").onclick = join;
 $("strategy").onchange = refreshCompare;
@@ -544,6 +885,10 @@ const send = () => {
 };
 $("send").onclick = send;
 $("ask").onkeydown = (e) => { if (e.key === "Enter") send(); };
+$("room").onkeydown = (e) => { if (e.key === "Enter") join(); };
+$("name").onkeydown = (e) => { if (e.key === "Enter") join(); };
+
+// Following a join link should not also require pressing a button.
 if ($("room").value) join();
 </script>
 </body>

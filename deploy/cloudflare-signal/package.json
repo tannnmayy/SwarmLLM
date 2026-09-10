@@ -1,0 +1,14 @@
+{
+  "name": "ai-swarm-signal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Swarm signalling as a Cloudflare Worker + Durable Object. The whole server side of a deployment.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -33,7 +33,9 @@ import { modelSpec, plan as solvePlan, compareAll } from "../scheduler/plan.js";
 import { rttLookup } from "../scheduler/cost.js";
 import { profile, watchPressure, defaultPledgeBytes } from "../scheduler/probe.js";
 import { keepAwake } from "./awake.js";
-import { MODELS, getModel } from "../models/registry.mjs";
+import { MODELS, getModel, capabilityGap } from "../models/registry.mjs";
+import { resolveDelivery, originLabel } from "../models/delivery.mjs";
+import { loadConfig } from "./config.js";
 
 // The system turn. Short on purpose: every token here is a token of context the
 // conversation does not get, and the window is only 512 positions wide.
@@ -43,6 +45,24 @@ const SYSTEM = "You are a helpful AI assistant running across several devices at
 // that has to stop after a dozen tokens is not an answer, and finding that out at
 // the end of a prefill wastes a lap across every device in the room.
 const MIN_ANSWER_TOKENS = 64;
+
+// What this browser can actually do, asked once. The scheduler's own profiler
+// (scheduler/probe.js) measures speed and memory but knows nothing about WebGPU,
+// so without this a device with no GPU support looks like a perfectly good worker:
+// it profiles, joins, gets dealt a layer range, and only then discovers it cannot
+// load anything. The host waits out the full 120 s _waitForWorkers timeout and the
+// whole room fails to start. On a public link that is the single most likely first
+// visit -- someone opens it on a phone whose browser has no WebGPU.
+async function detectCaps() {
+  if (typeof navigator === "undefined" || !navigator.gpu) return { webgpu: false, shaderF16: false };
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+    if (!adapter) return { webgpu: false, shaderF16: false };
+    return { webgpu: true, shaderF16: adapter.features.has("shader-f16") };
+  } catch {
+    return { webgpu: false, shaderF16: false };
+  }
+}
 
 // Re-exported for callers that already do `import { MODELS } from "./room.js"`
 // (room.html). The room itself now asks the registry, not this file, for a
@@ -104,7 +124,31 @@ export class Room {
   // when a "deal" message tells a worker the host is running a different model
   // than the one it assumed (see the "deal" case in _onMsg) — one code path for
   // both, so there is only one place this can be wrong.
-  async _loadModelSpec(descriptor) {
+  async _loadModelSpec(unresolved) {
+    // Decide where this device's weight bytes come from before anything asks for
+    // one. The rest of this method — and _load() after it — only ever sees the
+    // resolved descriptor, whose modelUrl/tokenizerUrl/dir are real URLs at one
+    // chosen origin. Cached in models/delivery.mjs, so the re-deal path pays for
+    // the probe once per model, not once per plan.
+    const cfg = await loadConfig();
+    const descriptor = await resolveDelivery(unresolved, { prefer: cfg.delivery, carries: cfg.models });
+    this.descriptor = descriptor;
+
+    // Whether this device can run THIS model, decided before it advertises itself
+    // as a worker. Re-evaluated here rather than once at join because the host can
+    // deal a different model than the one this device assumed, and a device that
+    // could run SmolLM2 on the CPU may not be able to run a Qwen3 rung at all.
+    if (!this.caps) this.caps = await detectCaps();
+    this.cannotRun = capabilityGap(descriptor, this.caps);
+    if (this.cannotRun) this._emit("cannot-run", { model: descriptor.id, why: this.cannotRun });
+    this._emit("delivery", {
+      model: descriptor.id,
+      origin: descriptor.delivery.origin,
+      label: originLabel(descriptor.delivery.origin),
+      url: descriptor.modelUrl || descriptor.dir,
+      probed: descriptor.delivery.probed || null,
+    });
+
     const maxSeq = this.maxSeq || descriptor.maxSeqDefault || 512;
     if (descriptor.engineKind === "cpu-smollm") {
       const manifest = await (await fetch(descriptor.dir + "/manifest.json")).json();
@@ -137,6 +181,16 @@ export class Room {
   }
 
   async join({ pledgeBytes = null } = {}) {
+    // Deployment wiring first: on a static deployment the signalling service is on
+    // a different host than the pages, and the mesh has no way to guess that. Set
+    // before connect(), which is where Mesh reads its URL.
+    const cfg = await loadConfig();
+    if (cfg.signalUrl) this.mesh.url = cfg.signalUrl;
+    if (cfg.iceServers) this.mesh.iceServers = cfg.iceServers;
+    if (cfg.warning) this._emit("error", cfg.warning);
+    if (cfg.iceWarning) this._emit("error", cfg.iceWarning);
+    this._emit("config", cfg);
+
     await this._loadModelSpec(getModel(this.model));
 
     const r = await this.mesh.connect();
@@ -192,6 +246,10 @@ export class Room {
     this.mesh.setMeta({
       msPerLayer: this.myProfile.msPerLayer,
       budgetBytes: this.pledgeBytes,
+      // Travels with speed and memory because it is the same kind of fact: what
+      // this device is worth to the room. `false` means "do not deal me layers".
+      canRun: !this.cannotRun,
+      cannotRunWhy: this.cannotRun || undefined,
       stable: this.myProfile.stable,
       pressure: this.myProfile.pressure,
       battery: this.myProfile.battery,
@@ -215,6 +273,14 @@ export class Room {
     }];
     for (const p of this.peers) {
       if (!p.ready || !p.meta?.msPerLayer) continue;
+      // A device that has told the room it cannot run this model is not a candidate.
+      // Planning it in and letting it fail at load time costs the whole room the
+      // 120 s _waitForWorkers timeout -- see detectCaps() above.
+      if (p.meta.canRun === false) continue;
+      // Same, but for a device that got as far as trying and failed anyway (a GPU
+      // that lost its device, an out-of-memory, a weight fetch that would not
+      // complete). It reported that with "cannot-load"; do not re-deal to it.
+      if (this._cannotLoad?.has(p.id)) continue;
       out.push({
         id: p.id,
         name: p.name,
@@ -361,23 +427,48 @@ export class Room {
         this.range = m.range;
         this.next = m.next;
         this.isHost = false;
-        if (same) {
-          this.engine.reset();
-          this._emit("kept-range", this.range);
-        } else {
-          await this._load(m.range, false, false);
+        // Refuse before downloading a gigabyte this device can never use. Every
+        // failure path below ends the same way -- tell the host, so it can re-plan
+        // around this device now instead of waiting out _waitForWorkers' 120 s
+        // timeout and failing the whole start.
+        if (this.cannotRun) {
+          this.mesh.send(this.hostId, { t: "cannot-load", why: this.cannotRun });
+          this._emit("error", `cannot run ${this.model}: ${this.cannotRun}`);
+          break;
+        }
+        try {
+          if (same) {
+            this.engine.reset();
+            this._emit("kept-range", this.range);
+          } else {
+            await this._load(m.range, false, false);
+          }
+        } catch (e) {
+          // _onMsg is async and nothing awaits it, so without this catch a load
+          // failure here is an unhandled rejection: silent on this device, and a
+          // two-minute stall on the host.
+          const why = String(e?.message || e);
+          this.mesh.send(this.hostId, { t: "cannot-load", why });
+          this._emit("error", `could not load layers ${m.range[0]}–${m.range[1] - 1}: ${why}`);
+          break;
         }
         this.mesh.send(this.hostId, { t: "ready", range: this.range });
         break;
       }
 
       case "progress":
+        // Proof of life for the load watchdog above, not just a number for the UI.
+        this._pending?.kick();
         this._emit("progress", from, m.pct);
         break;
 
       case "ready":
         this._readyCount = (this._readyCount || 0) + 1;
         this._emit("worker-ready", from, m.range);
+        // One worker finishing is also proof the others are not being starved by a
+        // dead host; rearm before checking, so a three-device room does not time out
+        // on the slowest member just because a faster one already landed.
+        this._pending?.kick();
         if (this._pending && this._readyCount >= this._pending.need) {
           clearTimeout(this._pending.timer);
           const done = this._pending.resolve;
@@ -385,6 +476,32 @@ export class Room {
           done();
         }
         break;
+
+      // A worker that cannot hold what it was dealt. Structurally the same event as
+      // that worker leaving -- the plan is invalid and has to be solved again
+      // without it -- so it reuses the departure machinery rather than growing a
+      // second, subtly different recovery path. The difference is that the peer is
+      // still connected and still in the roster, so it has to be remembered as
+      // unusable explicitly (_devices() reads this), or the next solve would deal
+      // it the same range again.
+      case "cannot-load": {
+        if (!this.isHost) break;
+        (this._cannotLoad ||= new Set()).add(from);
+        this._emit("worker-failed", from, m.why);
+        // Free anyone waiting on this worker's "ready" before re-planning, or the
+        // re-plan happens underneath a promise that will never settle.
+        this._deadPeers.add(from);
+        if (this._pending) {
+          clearTimeout(this._pending.timer);
+          const fail = this._pending;
+          this._pending = null;
+          fail.resolve();
+        }
+        for (const [, resolve] of this.waiting) resolve(null);
+        this.waiting.clear();
+        if (!this.recovering) this._recover(`a device could not load its layers: ${m.why}`);
+        break;
+      }
 
       case "ready-all":
         this._emit("ready");
@@ -465,7 +582,14 @@ export class Room {
     // dispose() at all, hence the optional chain.
     this.engine?.dispose?.();
     this._emit("loading", { range, pct: 0 });
-    const descriptor = getModel(this.model);
+    // The delivery-resolved descriptor from _loadModelSpec(), never the raw registry
+    // entry: the raw one has no modelUrl at all now, only the two origins it could
+    // be served from. Resolving here as a fallback keeps a direct _load() caller
+    // honest rather than letting it fetch `undefined`.
+    const descriptor = this.descriptor || await (async () => {
+      const cfg = await loadConfig();
+      return resolveDelivery(getModel(this.model), { prefer: cfg.delivery, carries: cfg.models });
+    })();
     let lastSent = 0;
     this.engine = await createEngine(descriptor, {
       layerRange: range,
@@ -538,6 +662,15 @@ export class Room {
   // is ~8 layers of arithmetic and it is serial on the host.
   async start({ strategy = "optimal" } = {}) {
     if (!this.myProfile) { this._emit("error", "still measuring this device"); return; }
+    // The host holds the embedding table and the LM head, so it always runs the
+    // model too -- there is no arrangement where it merely coordinates. Checked
+    // here rather than left to _devices(), which would just report "no feasible
+    // plan: too little memory" and send someone hunting the wrong problem.
+    if (this.cannotRun) {
+      this._emit("error", `this device cannot run ${MODELS[this.model].label}: ${this.cannotRun}. ` +
+        "Start the room from a device that can, or pick a model this one supports.");
+      return;
+    }
     this.strategy = strategy;
 
     const devices = this._devices();
@@ -556,20 +689,47 @@ export class Room {
       this.mesh.send(p.host, { t: "become-host", strategy });
       return;
     }
-    await this._deal(p);
+    // _deal can legitimately fail -- a worker that stops responding, a GPU that
+    // will not allocate. Without this the rejection is unhandled: a console error
+    // nobody sees, a progress bar stuck at 100%, and no way to tell from the page
+    // whether the room is still working or gave up.
+    try {
+      await this._deal(p);
+    } catch (e) {
+      this._emit("error", `the room did not come online: ${String(e?.message || e)}`);
+    }
   }
 
   // Wait until `n` workers report ready. Resolves immediately if they already have --
   // a worker that kept its range replies almost instantly, and can beat us here.
-  _waitForWorkers(n, timeoutMs = 120000) {
+  //
+  // A watchdog on SILENCE, not a deadline on the whole load. This was a flat 120 s
+  // budget, which is fine against a LAN mirror where a worker's share of a model
+  // arrives in seconds, and wrong the moment weights come from a CDN: measured on a
+  // real two-device room pulling Qwen3 0.6B from huggingface.co, the worker needed
+  // 138 s for its 191 MB and the host 193 s for its 413 MB. The host gave up before
+  // either finished, every time, and the room never started.
+  //
+  // What actually distinguishes a slow worker from a dead one is not elapsed time --
+  // it is whether anything is still happening. Workers already report download
+  // progress every 10%, so any progress message rearms this. A device on a slow
+  // connection takes as long as it takes; a device that has said nothing for
+  // `idleMs` has genuinely stopped.
+  _waitForWorkers(n, idleMs = 90000) {
     if (n <= 0 || (this._readyCount || 0) >= n) return Promise.resolve();
     return new Promise((resolve, reject) => {
+      const arm = () => setTimeout(() => {
+        this._pending = null;
+        reject(new Error(
+          `${n - (this._readyCount || 0)} device(s) stopped responding while loading ` +
+          `(nothing heard for ${Math.round(idleMs / 1000)}s)`));
+      }, idleMs);
       this._pending = {
         need: n, resolve,
-        timer: setTimeout(() => {
-          this._pending = null;
-          reject(new Error(`${n - (this._readyCount || 0)} device(s) never finished loading`));
-        }, timeoutMs),
+        timer: arm(),
+        // Called from the "progress" and "ready" handlers. Cheap enough to run on
+        // every message; the alternative is tracking a timestamp and polling.
+        kick() { clearTimeout(this.timer); this.timer = arm(); },
       };
     });
   }

@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="tests" src="https://img.shields.io/badge/tests-168%20passing-3ddc84">
+  <img alt="tests" src="https://img.shields.io/badge/tests-295%20passing-3ddc84">
   <img alt="runtime" src="https://img.shields.io/badge/runs%20on-WebRTC%20%2B%20any%20browser-3b5bff">
   <img alt="install" src="https://img.shields.io/badge/install-none-7c5cff">
   <img alt="licence" src="https://img.shields.io/badge/licence-MIT-16171c">
@@ -65,7 +65,10 @@ Everything ticked is backed by a test in this repository or a recorded run, not 
 | ChatML prompting + multi-turn + honest context limit | working |
 | WebGPU kernels (imported `DenseEngine`) | verified on real hardware — kernel + end-to-end self-test, bit-exact at f32/Q8/Q4 ([report](docs/gpu-reports/2026-09-09-phase1-gpu-selftest.json)) |
 | GPU engine factory + adapter (`engine/factory.mjs`, `engine/gpu-adapter.mjs`) | verified on real hardware — loads a real GGUF over an HTTP range request, whole-model and split across two engine instances both match an independent CPU reference to 1.1e-7 relative error ([report](docs/gpu-reports/2026-09-09-phase2-gpu-adapter-selftest.json)) · **34/34 tests** |
-| Model ladder registry (`models/registry.mjs`) — SmolLM/Qwen3 0.6B/1.7B/4B/Qwen3.8 | descriptors exist with honest status tags (verified/experimental/planned); **the live room still only runs SmolLM2** — no real Qwen download is wired in yet |
+| Model ladder registry (`models/registry.mjs`) — SmolLM/Qwen3 0.6B/1.7B/4B/Qwen3.8 | descriptors carry honest status tags (verified/experimental/planned) and both origins each model can be served from. Qwen3 0.6B and 1.7B are wired in and run in a real room; 4B is experimental (blocked on a second GPU) and Qwen3.8 27B is a roadmap entry with no engine vendored |
+| Weight delivery — Hugging Face CDN, local mirror as LAN/offline fallback | working · **58/58 tests** · pinned upstream URLs re-checked live against the registry's recorded byte length and SHA-256 ([report](docs/delivery/2026-09-10-upstream-verification.json), 39 passed / 0 failed) |
+| Deployable as a static site + a standalone signalling service | working · `npm run build` / `npm run signal`, or a Cloudflare Worker + Durable Object · **26/26 tests** on the static handler ([how](docs/DEPLOY.md)) |
+| Two-device run over the deployed topology | working · separate origins for site and signalling, weights from HF · worker pulled **191.4 MB** of 610 MB, **144 tokens at 5.44 tok/s**, median lap **49.5 ms** · **23/23 tests** on the protocol regressions it found |
 
 **Measured, on two browsers:** 60 tokens at **4.99 tok/s**, median network lap
 **63.6 ms**, answer byte-identical to the single-device reference.
@@ -95,6 +98,12 @@ Then:
 
 Open the room on two or more devices with the same code, drag the **pledge** slider
 down so the model no longer fits on one device, and press **Start the swarm**.
+
+`npm run model` is only needed for SmolLM2, whose per-layer shards are built
+locally. Every Qwen3 rung is range-fetched from Hugging Face at run time, or from
+`models/` if you have mirrored it — the page probes and picks. To put it on the
+internet rather than a LAN, see **[docs/DEPLOY.md](docs/DEPLOY.md)**: a static site
+plus one small signalling process, with the weights coming off HF's CDN.
 
 > **WebGPU and WebRTC both require a secure context.** Plain `http://192.168.x.x`
 > gives you neither, and the failure looks exactly like *"this phone has no WebGPU"* —
@@ -343,6 +352,7 @@ room/
   mesh.js        WebRTC mesh, negotiated ctrl/wire channels, RTT gossip
   room.js        the room: profile, plan, deal, generate, heal
   awake.js       wake lock, so a device in the chain cannot doze
+  config.js      deployment wiring: where signalling lives, where weights come from
 
 engine/
   cpu.mjs          the sliceable CPU engine and the four-call contract; isomorphic
@@ -352,12 +362,18 @@ engine/
   upstream/        vendored WebGPU engine (DenseEngine, GGUF loader, WGSL kernels) — see UPSTREAM.md
 
 models/
-  registry.mjs   the model ladder: one descriptor per model, with an honest status tag
+  registry.mjs   the model ladder: one descriptor per model, with an honest status tag,
+                 and the two origins it can be served from (pinned HF URL + local mirror)
+  delivery.mjs   picks one of those origins per device, by probing; 206 + GGUF magic
 
 tools/
   build-test-gguf.mjs  writes the tiny real Q8_0 GGUF fixture gpu-adapter-test.html loads
-  serve.mjs      HTTPS + HTTP dev server, signalling attached at /signal
+  serve.mjs      dev server: the static half and the signalling half on one listener
+  static.mjs     static file serving with real range support, as a handler
   signal.mjs     introductions only — no message type can carry a prompt
+  signal-server.mjs  the signalling half, standalone — the whole server side of a deployment
+  build-static.mjs   walks the module graph into dist/; a CDN build, or a LAN bundle
+  verify-delivery.mjs  live check that the pinned HF URLs are the bytes the registry claims
   fetch-model.mjs   download and reshape into per-layer shards
   tokenizer.mjs  byte-level BPE
   reference.mjs  CPU golden reference — what the GPU port must match

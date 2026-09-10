@@ -1,152 +1,598 @@
 <!doctype html>
+<!--
+  Landing page.
+
+  The visual design — palette, type scale, component shapes, the ambient node-mesh
+  canvas and the replay panel — is adapted from SwarmLLM's landing page
+  (https://github.com/Nehanth/swarmllm, MIT), the same project engine/upstream/ is
+  imported from. See THIRD_PARTY_NOTICES.md and UPSTREAM.md.
+
+  The copy is not adapted. Every number on this page is one this repository's own
+  tests or recorded runs produced — see README.md's status table for where each
+  comes from.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>AI Swarm — many devices, one model</title>
-<meta name="description" content="Run one large AI model across all the devices in a room. Nothing to install.">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<title>AI Swarm · many devices, one model</title>
+<meta name="description" content="Run one AI model across every device in the room. Each holds a slice; together they run the whole thing. Nothing to install.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; --bg:#0b0c10; --card:#15161c; --card2:#1c1f29; --line:#25272f;
-          --fg:#e9eaf0; --dim:#868ba0; --dim2:#666b7d;
-          --ok:#3ddc84; --acc:#3b5bff; --acc2:#7c5cff; }
-  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
-  .wrap { max-width:940px; margin:0 auto; padding:28px 20px 60px; }
+  :root {
+    --paper: #f5f4ee;
+    --paper-2: #fbfaf5;
+    --ink: #16171c;
+    --faint: #c4c0b1;
+    --muted: #8b877a;
+    --line: #e1ded2;
+    --accent: #2b4eff;
+    --sans: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  ::selection { background: var(--accent); color: #fff; }
 
-  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:56px; }
-  .logo { font-size:17px; font-weight:800; letter-spacing:-.02em; }
-  .logo span { color:var(--acc2); }
-  .tag { font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim2);
-         border:1px solid var(--line); border-radius:999px; padding:4px 11px; }
+  #stage { position: fixed; inset: 0; z-index: 0; }
+  #mesh { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: pan-y; pointer-events: none; }
 
-  h1 { font-size:clamp(34px,7vw,58px); line-height:1.05; letter-spacing:-.03em; margin:0 0 20px; font-weight:800; }
-  h1 .muted { color:var(--dim2); }
-  h1 .hl { color:var(--acc2); }
-  .lede { font-size:clamp(16px,2.4vw,19px); color:var(--dim); max-width:620px; margin:0 0 34px; }
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+    display: flex; align-items: center;
+    padding: 22px max(28px, 4vw);
+    transition: all .3s;
+  }
+  nav.scrolled {
+    padding: 14px max(28px, 4vw);
+    background: color-mix(in srgb, var(--paper) 80%, transparent);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .wordmark { font-weight: 700; font-size: 20px; letter-spacing: -.02em; color: inherit; text-decoration: none; }
+  .wordmark em { font-style: normal; color: var(--accent); }
+  .spacer { flex: 1; }
+  .navlink { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; margin-right: 26px; transition: color .2s; background: none; border: 0; cursor: pointer; }
+  .navlink:hover { color: var(--ink); }
+  .gh { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; margin-right: 22px; transition: color .2s; }
+  .gh:hover { color: var(--ink); }
+  .gh svg { display: block; }
 
-  .actions { display:flex; gap:12px; flex-wrap:wrap; align-items:stretch; margin-bottom:14px; }
-  button, .btn { background:var(--acc); color:#fff; border:0; border-radius:12px;
-                 padding:15px 22px; font:inherit; font-weight:650; cursor:pointer; font-size:16px; }
-  button.ghost { background:var(--card2); color:var(--fg); border:1px solid var(--line); }
-  .joinbox { display:flex; gap:8px; align-items:stretch; }
-  input { background:#0a0b0f; border:1px solid var(--line); color:var(--fg); border-radius:12px;
-          padding:15px 16px; font:inherit; font-size:16px; width:150px;
-          text-transform:uppercase; letter-spacing:.15em; font-family:ui-monospace,Menlo,monospace; }
-  input::placeholder { letter-spacing:normal; font-family:inherit; text-transform:none; }
-  .fine { color:var(--dim2); font-size:13px; margin-bottom:56px; }
+  .cta {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 14px; font-weight: 500;
+    padding: 15px 28px; border-radius: 100px;
+    background: var(--ink); color: var(--paper);
+    text-decoration: none; border: none; cursor: pointer;
+    transition: all .3s cubic-bezier(.2,.8,.2,1);
+  }
+  .cta:hover { background: var(--accent); transform: translateY(-2px); box-shadow: 0 10px 34px rgba(43,78,255,.35); }
+  .cta .arrow { transition: transform .3s; }
+  .cta:hover .arrow { transform: translateX(4px); }
+  .cta.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .cta.ghost:hover { border-color: var(--ink); background: transparent; color: var(--ink); box-shadow: none; }
+  nav .cta { padding: 10px 20px; font-size: 12px; }
 
-  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin-bottom:56px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:20px; }
-  .card .n { width:32px; height:32px; border-radius:50%; display:grid; place-items:center;
-             font-weight:700; font-size:14px; color:#fff; margin-bottom:13px; }
-  .card h3 { margin:0 0 7px; font-size:17px; letter-spacing:-.01em; }
-  .card p { margin:0; color:var(--dim); font-size:14.5px; line-height:1.55; }
+  /* hero */
+  #hero { position: relative; z-index: 1; height: 100svh; pointer-events: none; }
+  .copy { position: absolute; left: max(28px, 5vw); top: 50%; transform: translateY(-50%); max-width: 800px; }
+  .copy a, .copy .joinline { pointer-events: auto; }
+  .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .22em; color: var(--muted); margin-bottom: 26px; }
+  h1 { font-size: clamp(42px, 5.4vw, 78px); line-height: 1; font-weight: 700; letter-spacing: -.04em; margin-bottom: 26px; }
+  h1 .dim { color: var(--faint); }
+  h1 .acc { color: var(--accent); }
+  .sub { font-size: 17px; color: var(--muted); max-width: 40ch; margin-bottom: 34px; line-height: 1.6; }
+  .sub b { color: var(--ink); font-weight: 500; }
 
-  .strip { background:var(--card); border:1px solid var(--line); border-radius:16px;
-           padding:22px; display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:20px; }
-  .strip b { display:block; font-size:26px; font-weight:800; letter-spacing:-.02em; }
-  .strip span { color:var(--dim2); font-size:13px; }
+  .joinline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .joinline input {
+    font-family: var(--mono); font-size: 14px; letter-spacing: .3em; text-transform: uppercase;
+    width: 150px; padding: 14px 18px; border-radius: 100px;
+    border: 1px solid var(--line); background: var(--paper-2); color: var(--ink);
+  }
+  .joinline input::placeholder { letter-spacing: normal; text-transform: none; font-family: var(--sans); color: var(--faint); }
+  .joinline input:focus { outline: none; border-color: var(--accent); }
 
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim2);
-       margin:0 0 16px; font-weight:650; }
-  .flow { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:12px; }
-  .node { background:var(--card2); border:1px solid var(--line); border-radius:11px;
-          padding:11px 14px; font-size:13.5px; }
-  .node small { display:block; color:var(--dim2); font-size:11.5px; font-family:ui-monospace,Menlo,monospace; }
-  .arr { color:var(--acc); font-size:17px; }
-  footer { margin-top:60px; padding-top:22px; border-top:1px solid var(--line);
-           color:var(--dim2); font-size:13px; display:flex; gap:18px; flex-wrap:wrap; }
-  footer a { color:var(--dim); text-decoration:none; }
-  footer a:hover { color:var(--fg); }
+  #strip {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 20px max(28px, 4vw);
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+  }
+  #strip .sep { color: var(--faint); margin: 0 8px; }
+
+  /* replay panel */
+  #demo {
+    height: 440px; display: flex; flex-direction: column;
+    background: var(--paper-2); border: 1px solid var(--line); border-radius: 20px;
+    overflow: hidden; box-shadow: 0 2px 6px rgba(20,21,26,.04), 0 24px 70px rgba(20,21,26,.09);
+  }
+  .demo-bar {
+    display: flex; align-items: center; gap: 12px; padding: 13px 18px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--paper-2) 60%, var(--paper)); flex: none;
+  }
+  .wdots { display: inline-flex; gap: 6px; }
+  .wdots i { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .wdots i:first-child { background: var(--faint); }
+  .demo-title { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; color: var(--muted); }
+  #demo-live {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+    color: var(--accent); background: none; border: none; padding: 0; cursor: default;
+  }
+  #demo-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink 1.6s infinite; }
+  #demo-live.again { cursor: pointer; color: var(--muted); }
+  #demo-live.again::before { animation: none; background: var(--faint); }
+  #demo-live.again:hover { color: var(--ink); }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  #demo-lines { flex: 1; overflow: hidden; padding: 18px 22px; font-family: var(--mono); font-size: 12.5px; line-height: 2; }
+  #demo-lines .dl { color: var(--muted); animation: rise .5s cubic-bezier(.2,.8,.2,1) both; }
+  #demo-lines .dl b { color: var(--ink); font-weight: 500; }
+  #demo-lines .dl .hl { color: var(--accent); }
+  .dprog { display: inline-block; vertical-align: middle; width: 90px; height: 4px; margin-left: 10px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  .dprog > span { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; animation: dfill 1.3s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes dfill { to { width: 100%; } }
+  #demo-lines .da {
+    margin-top: 14px; background: #eceffe; border: 1px solid #d9defb; border-radius: 14px;
+    padding: 13px 16px; color: var(--ink); font-size: 13.5px; line-height: 1.7;
+    animation: rise .5s both;
+  }
+  #demo-lines .da b { color: var(--accent); font-weight: 500; }
+  @media (max-width: 860px) { #demo { height: 420px; } #demo-lines { font-size: 11px; padding: 14px 16px; } }
+
+  /* editorial */
+  main { position: relative; z-index: 2; background: var(--paper); border-top: 1px solid var(--line); }
+  section { max-width: 1080px; margin: 0 auto; padding: 120px max(28px, 4vw) 80px; }
+  .sec-kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .22em; color: var(--accent); margin-bottom: 22px; }
+  h2 { font-size: clamp(32px, 4vw, 56px); font-weight: 700; letter-spacing: -.03em; line-height: 1.04; }
+  .lede { font-size: 18px; color: var(--muted); max-width: 58ch; margin-top: 26px; line-height: 1.7; }
+  .lede b { color: var(--ink); font-weight: 500; }
+
+  .how-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 64px; align-items: start; margin-top: 64px; }
+  .how-left { position: sticky; top: 100px; }
+  .hs { display: flex; gap: 20px; align-items: flex-start; padding: 26px 0; border-bottom: 1px solid var(--line); }
+  .hs:first-child { padding-top: 6px; }
+  .hs-n {
+    font-family: var(--mono); font-size: 11px; color: var(--accent);
+    width: 32px; height: 32px; border: 1px solid var(--accent); border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; flex: none; margin-top: 2px;
+  }
+  .hs h3 { font-size: 20px; font-weight: 500; letter-spacing: -.01em; margin-bottom: 7px; }
+  .hs p { font-size: 14.5px; color: var(--muted); line-height: 1.65; }
+  .hs-note { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 24px; }
+
+  /* measured numbers */
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; margin-top: 56px; background: var(--line); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+  .fact { background: var(--paper-2); padding: 26px 24px; }
+  .fact b { display: block; font-size: 30px; font-weight: 700; letter-spacing: -.03em; margin-bottom: 6px; }
+  .fact span { font-size: 13px; color: var(--muted); line-height: 1.5; display: block; }
+  .fact .where { font-family: var(--mono); font-size: 10px; color: var(--faint); margin-top: 10px; display: block; }
+
+  .endcta { text-align: center; padding: 60px 28px 130px; }
+  .endcta .big { font-size: clamp(26px, 3vw, 42px); font-weight: 700; letter-spacing: -.03em; margin-bottom: 32px; line-height: 1.15; }
+  .endcta .big em { font-style: normal; color: var(--accent); }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 34px max(28px, 4vw);
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    position: relative; z-index: 2; background: var(--paper);
+  }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--ink); }
+
+  #modal {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(20,21,26,.35); backdrop-filter: blur(10px); padding: 24px;
+  }
+  #modal[hidden] { display: none; }
+  #modal-card {
+    position: relative; background: var(--paper); border: 1px solid var(--line);
+    border-radius: 26px; padding: 44px 46px; max-width: 580px; width: 100%;
+    box-shadow: 0 30px 90px rgba(20,21,26,.25);
+    animation: pop .45s cubic-bezier(.2,.8,.2,1) both;
+    max-height: 86vh; overflow-y: auto;
+  }
+  @keyframes pop { from { opacity: 0; transform: scale(.94) translateY(14px); } to { opacity: 1; transform: none; } }
+  #modal-card h3 { font-size: clamp(24px, 2.6vw, 34px); font-weight: 700; letter-spacing: -.03em; line-height: 1.1; margin-bottom: 18px; }
+  #modal-card p { font-size: 15px; color: var(--muted); line-height: 1.7; margin-bottom: 14px; }
+  #modal-card p b { color: var(--ink); font-weight: 500; }
+  #modal-x { position: absolute; top: 18px; right: 22px; background: none; border: none; font-size: 26px; color: var(--muted); cursor: pointer; line-height: 1; }
+  #modal-x:hover { color: var(--ink); }
+  .modal-row { display: flex; align-items: center; gap: 22px; margin-top: 26px; flex-wrap: wrap; }
+  #modal-more { font-family: var(--mono); font-size: 12px; color: var(--muted); text-decoration: none; }
+  #modal-more:hover { color: var(--ink); }
+
+  .rv { opacity: 0; transform: translateY(26px); transition: all .8s cubic-bezier(.2,.8,.2,1); }
+  .rv.in { opacity: 1; transform: none; }
+  .ri { animation: rise 1s cubic-bezier(.2,.8,.2,1) both; }
+  .ri.d1 { animation-delay: .08s; } .ri.d2 { animation-delay: .16s; } .ri.d3 { animation-delay: .24s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+  @media (max-width: 860px) {
+    .copy { top: auto; bottom: 74px; transform: none; right: 24px; max-width: none; }
+    h1 { font-size: clamp(38px, 10.5vw, 56px); }
+    .sub { font-size: 14.5px; max-width: none; margin-bottom: 24px; }
+    .cta { padding: 13px 24px; font-size: 13px; }
+    .joinline input { width: 128px; padding: 12px 16px; font-size: 16px; }
+    #strip { font-size: 9.5px; padding: 14px 24px; }
+    .navlink { display: none; }
+    .gh .gh-label { display: none; }
+    .how-grid { grid-template-columns: 1fr; gap: 36px; }
+    .how-left { position: static; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ri, .rv, .dl, .da { animation: none !important; transition: none !important; opacity: 1 !important; transform: none !important; }
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <div class="logo">AI<span> Swarm</span></div>
-    <span class="tag">Team SE7EN</span>
-  </header>
 
-  <h1>Your phone can't run a big AI model.<br><span class="hl">Your room can.</span></h1>
-  <p class="lede">
-    Phones, laptops, the PC in the corner — one code away from becoming a single machine.
-    Each device holds a slice of the model; together they run the whole thing.
-    Nothing to install, no account, and nothing you type ever leaves the room.
-  </p>
+<div id="stage"><canvas id="mesh"></canvas></div>
 
-  <div class="actions">
-    <button id="create">Start a swarm →</button>
-    <div class="joinbox">
-      <input id="code" placeholder="have a code?" maxlength="8" autocomplete="off">
-      <button class="ghost" id="join">Join</button>
+<div id="modal" hidden>
+  <div id="modal-card">
+    <button id="modal-x" aria-label="close">×</button>
+    <div class="sec-kicker">WHAT IS AI SWARM</div>
+    <h3>A group of devices,<br>running one model together.</h3>
+    <p>A language model has to be held in memory to run. Most are bigger than any one phone or laptop has, which is why AI usually lives in a data centre.</p>
+    <p>AI Swarm cuts the model into contiguous slices and gives one slice to each device in the room. Every word takes a lap through all of them before it appears on every screen at once.</p>
+    <p>The part we actually built is the <b>scheduler</b>: it measures how fast each device computes and how far it sits from its neighbours, then solves the placement — who is in, in what order, holding which layers, and which one should be host. Other swarms deal layers by pledged memory in join order, so one slow phone sets the pace for everyone.</p>
+    <p>No install. No account. Nothing you type reaches a server.</p>
+    <div class="modal-row">
+      <a class="cta" href="room.html">start a swarm <span class="arrow">→</span></a>
+      <a id="modal-more" href="#how">read the full story ↓</a>
     </div>
   </div>
-  <p class="fine">Works in any modern browser. Open it on a second device to see the point.</p>
-
-  <div class="grid">
-    <div class="card">
-      <div class="n" style="background:var(--acc)">1</div>
-      <h3>Open a link</h3>
-      <p>No install, no sign-up, no drivers. A locked-down work laptop can join in the time it takes to scan a code.</p>
-    </div>
-    <div class="card">
-      <div class="n" style="background:var(--acc2)">2</div>
-      <h3>Share what you like</h3>
-      <p>You choose how much of your device to lend. Take it back whenever you want — the room carries on without you.</p>
-    </div>
-    <div class="card">
-      <div class="n" style="background:var(--ok)">3</div>
-      <h3>Ask together</h3>
-      <p>Anyone in the room can ask a question, and the answer appears on every screen at once.</p>
-    </div>
-  </div>
-
-  <h2>How it works</h2>
-  <div class="flow">
-    <div class="node">Your question</div>
-    <span class="arr">→</span>
-    <div class="node">Laptop<small>parts 1–13</small></div>
-    <span class="arr">→</span>
-    <div class="node">PC<small>parts 14–24</small></div>
-    <span class="arr">→</span>
-    <div class="node">Phone<small>parts 25–30</small></div>
-    <span class="arr">→</span>
-    <div class="node" style="border-color:#2a4a35">The answer</div>
-  </div>
-  <p class="fine" style="margin-bottom:56px">
-    The model is cut into parts and shared out. A few kilobytes pass from one device to the
-    next for each word — small enough for ordinary Wi-Fi, and it never touches a server.
-  </p>
-
-  <h2>Why bother</h2>
-  <div class="strip">
-    <div><b>0</b><span>things to install</span></div>
-    <div><b>0</b><span>data sent to a server</span></div>
-    <div><b>~2 s</b><span>for a device to join</span></div>
-    <div><b>keeps going</b><span>when a device leaves</span></div>
-  </div>
-
-  <footer>
-    <a href="room.html">Room</a>
-    <a href="probe.html">Check this device</a>
-    <a href="README.md">How it's built</a>
-    <span style="margin-left:auto">Open source · MIT</span>
-  </footer>
 </div>
 
+<nav id="nav">
+  <a class="wordmark ri" href="./">AI<em>Swarm</em></a>
+  <div class="spacer"></div>
+  <button class="navlink ri d1" id="what-link">what is this?</button>
+  <a class="navlink ri d1" href="probe.html">check this device</a>
+  <a class="gh ri d1" href="https://github.com/tanmaysinghh/swarmllm" target="_blank" rel="noopener" aria-label="AI Swarm on GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg><span class="gh-label">github</span></a>
+  <a class="cta ri d1" href="room.html">start a swarm <span class="arrow">→</span></a>
+</nav>
+
+<div id="hero">
+  <div class="copy">
+    <div class="kicker ri">MESH INFERENCE · TEAM SE7EN</div>
+    <h1 class="ri d1">Your phone <span class="dim">can't run</span><br>a big model.<br><span class="acc">Your room can.</span></h1>
+    <p class="sub ri d2">Phones, laptops, the PC in the corner: <b>one code</b> away from becoming a single machine. Each holds a slice of the model; together they run the whole thing. Nothing to install.</p>
+    <div class="joinline ri d3">
+      <a class="cta" id="create" href="room.html">start a swarm <span class="arrow">→</span></a>
+      <input id="code" placeholder="have a code?" maxlength="8" autocomplete="off" aria-label="room code">
+      <button class="cta ghost" id="join">join</button>
+    </div>
+  </div>
+  <div id="strip" class="ri d3">
+    <span>nothing to install</span><span class="sep">·</span>
+    <span>no account</span><span class="sep">·</span>
+    <span>nothing you type reaches a server</span><span class="sep">·</span>
+    <span>keeps going when a device walks away</span>
+  </div>
+</div>
+
+<main>
+  <section id="how">
+    <div class="sec-kicker rv">WHAT IS AI SWARM</div>
+    <h2 class="rv">One model,<br>shared by the room.</h2>
+    <p class="lede rv">A model needs more memory than one everyday device has. AI Swarm lets a room of them share the load — and, unlike dealing layers by whoever pledged most, it <b>measures</b> each device and solves the placement.</p>
+
+    <div class="how-grid">
+      <div class="how-left rv">
+        <div id="demo">
+          <div class="demo-bar">
+            <span class="wdots"><i></i><i></i><i></i></span>
+            <span class="demo-title">room CCPU</span>
+            <button id="demo-live">LIVE</button>
+          </div>
+          <div id="demo-lines"></div>
+        </div>
+      </div>
+      <div class="how-steps rv">
+        <div class="hs"><span class="hs-n">01</span><div><h3>Open a link</h3><p>A four-letter code, or scan the QR on someone's screen. No install, no sign-up, no drivers — a locked-down work laptop can join.</p></div></div>
+        <div class="hs"><span class="hs-n">02</span><div><h3>Chip in what you like</h3><p>You choose how much of your device to lend. It gets measured, not trusted: real speed, real free memory, real latency to every other device.</p></div></div>
+        <div class="hs"><span class="hs-n">03</span><div><h3>Think together</h3><p>Every word laps the room and appears on every screen at once. Take your device back whenever — the room re-plans and carries on.</p></div></div>
+        <div class="hs-note">Private by design. The signalling server introduces devices and then stops mattering: it has no message type that could carry a prompt.</div>
+      </div>
+    </div>
+
+    <div class="facts rv">
+      <div class="fact"><b>5.44 tok/s</b><span>Qwen3 0.6B split across two devices, weights streamed from a CDN</span><span class="where">recorded run · README status table</span></div>
+      <div class="fact"><b>49.5 ms</b><span>median network lap for one word to cross the room and come back</span><span class="where">same run</span></div>
+      <div class="fact"><b>13.1 s</b><span>to heal after a device left 58 tokens into an answer — and finish the same sentence</span><span class="where">recorded recovery run</span></div>
+      <div class="fact"><b>295</b><span>tests, covering the wire format, the solver, recovery and delivery</span><span class="where">npm test</span></div>
+    </div>
+  </section>
+
+  <div class="endcta rv">
+    <div class="big">Your devices are already a <em>cluster</em>.<br>Introduce them.</div>
+    <a class="cta" href="room.html">start a swarm <span class="arrow">→</span></a>
+  </div>
+</main>
+
+<footer>
+  <span>AI Swarm · Team SE7EN</span>
+  <a href="room.html">room</a>
+  <a href="probe.html">check this device</a>
+  <a href="https://github.com/Nehanth/swarmllm" target="_blank" rel="noopener">engine &amp; design adapted from SwarmLLM (MIT)</a>
+  <span style="margin-left:auto">MIT licensed</span>
+</footer>
+
 <script type="module">
-const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";       // no O/0/I/1 — these get read aloud
+// ---------- nav, modal, reveal ----------
+const nav = document.getElementById("nav");
+addEventListener("scroll", () => nav.classList.toggle("scrolled", scrollY > 8), { passive: true });
+
+const modal = document.getElementById("modal");
+const openModal = (e) => { e?.preventDefault(); modal.hidden = false; };
+const closeModal = () => { modal.hidden = true; };
+document.getElementById("what-link").addEventListener("click", openModal);
+document.getElementById("modal-x").addEventListener("click", closeModal);
+document.getElementById("modal-more").addEventListener("click", closeModal);
+modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+
+const io = new IntersectionObserver((es) => es.forEach((e) => {
+  if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+}), { threshold: 0.12 });
+document.querySelectorAll(".rv").forEach((el) => io.observe(el));
+
+// ---------- join / create ----------
+const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // no O/0/I/1 — these get read aloud
 const newCode = () => Array.from({ length: 4 }, () => ALPHABET[Math.floor(Math.random() * 32)]).join("");
 const go = (code) => { location.href = "room.html#r=" + code; };
-
-document.getElementById("create").onclick = () => go(newCode());
+document.getElementById("create").addEventListener("click", (e) => { e.preventDefault(); go(newCode()); });
 const joinNow = () => {
   const v = document.getElementById("code").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (v) go(v); else document.getElementById("code").focus();
 };
-document.getElementById("join").onclick = joinNow;
-document.getElementById("code").onkeydown = (e) => { if (e.key === "Enter") joinNow(); };
+document.getElementById("join").addEventListener("click", joinNow);
+document.getElementById("code").addEventListener("keydown", (e) => { if (e.key === "Enter") joinNow(); });
+
+// ---------- ambient node mesh ----------
+// Devices drift, near ones link up, and light hops between them the way a hidden
+// state hops along the chain. Clicking anywhere drops a new device in and the two
+// nearest ones greet it — the same event the room shows when someone joins.
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv = document.getElementById("mesh");
+const ctx = cv.getContext("2d");
+const INK = "#16171c", ACCENT = "#2b4eff", MUTED = "#8b877a";
+const NAMES = ["laptop", "phone", "pc", "tablet", "macbook", "desktop", "pixel", "ipad", "thinkpad"];
+const EXTRA = ["you", "desk", "kiosk", "console", "workstation", "chromebook", "surface", "rig"];
+let W = 0, H = 0, DPR = 1, pts = [], pulses = [], rings = [];
+let mouse = { x: -1e4, y: -1e4 };
+let resizeT = null, avoid = { x: 0, y: 0, w: 0, h: 0 };
+const LINK = () => (W < 860 ? 120 : 160);
+const inCopy = (x, y) => x > avoid.x && x < avoid.x + avoid.w && y > avoid.y && y < avoid.y + avoid.h;
+
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, innerWidth < 860 ? 1.5 : 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const mobile = W < 860;
+  const cr = document.querySelector(".copy").getBoundingClientRect();
+  const pad = mobile ? 10 : 20;
+  avoid = { x: cr.left - pad, y: cr.top - pad, w: cr.width + 2 * pad, h: cr.height + 2 * pad };
+  const n = Math.round(W * H / (mobile ? 16000 : 17000));
+  const nLit = Math.min(NAMES.length, mobile ? 5 : 8);
+  const names = NAMES.slice().sort(() => Math.random() - 0.5);
+  pts = []; pulses = [];
+  for (let i = 0; i < n; i++) {
+    const lit = i < nLit;
+    let x = Math.random() * W, y = Math.random() * H;
+    for (let k = 0; lit && inCopy(x, y) && k < 30; k++) { x = Math.random() * W; y = Math.random() * H; }
+    pts.push({
+      x, y, vx: (Math.random() - .5) * .12, vy: (Math.random() - .5) * .12,
+      r: 1.2 + Math.random() * 1.6, lit, label: lit ? names[i] : null, ph: Math.random() * 6.28,
+    });
+  }
+  pts.sort(() => Math.random() - .5);
+}
+addEventListener("resize", () => { clearTimeout(resizeT); resizeT = setTimeout(resize, 120); });
+
+function sendLight(a, b) {
+  // Greedy hop toward the target through whatever points are in range — a light
+  // with no route simply does not fire, which is the honest thing to draw.
+  const path = [a]; let cur = a; const seen = new Set([a]);
+  for (let hop = 0; hop < 14 && cur !== b; hop++) {
+    let best = null, bd = Math.hypot(cur.x - b.x, cur.y - b.y);
+    for (const q of pts) {
+      if (seen.has(q) || (q !== b && inCopy(q.x, q.y))) continue;
+      if (Math.hypot(cur.x - q.x, cur.y - q.y) > LINK() * 1.3) continue;
+      const dt = Math.hypot(q.x - b.x, q.y - b.y);
+      if (dt < bd) { bd = dt; best = q; }
+    }
+    if (!best) break;
+    path.push(best); seen.add(best); cur = best;
+  }
+  if (path.length > 1) pulses.push({ path, i: 0, t: 0 });
+}
+
+function physics() {
+  for (const p of pts) {
+    if (p.lit && inCopy(p.x, p.y)) {
+      const cx = avoid.x + avoid.w / 2, cy = avoid.y + avoid.h / 2;
+      p.vx += (p.x - cx) * .0006; p.vy += (p.y - cy) * .0006;
+      p.vx = Math.max(-.5, Math.min(.5, p.vx)); p.vy = Math.max(-.5, Math.min(.5, p.vy));
+    }
+    p.x += p.vx; p.y += p.vy;
+    if (p.x < -20) p.x = W + 20; if (p.x > W + 20) p.x = -20;
+    if (p.y < -20) p.y = H + 20; if (p.y > H + 20) p.y = -20;
+  }
+  if (Math.random() < .035 && pulses.length < (W < 860 ? 4 : 7)) {
+    const lit = pts.filter((p) => p.lit);
+    if (lit.length > 1) {
+      const a = lit[Math.floor(Math.random() * lit.length)];
+      let b = lit[Math.floor(Math.random() * lit.length)];
+      if (b === a) b = lit[(lit.indexOf(a) + 1) % lit.length];
+      sendLight(a, b);
+    }
+  }
+  for (let i = rings.length - 1; i >= 0; i--) { rings[i].t += .018; if (rings[i].t >= 1) rings.splice(i, 1); }
+  for (let i = pulses.length - 1; i >= 0; i--) {
+    const pu = pulses[i];
+    const a = pu.path[pu.i], b = pu.path[pu.i + 1];
+    const len = Math.max(20, Math.hypot(a.x - b.x, a.y - b.y));
+    pu.t += 2.6 / len;
+    if (pu.t >= 1) { pu.t = 0; pu.i++; if (pu.i >= pu.path.length - 1) pulses.splice(i, 1); }
+  }
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if (scrollY >= H || e.target.closest("a, button, input, #modal, #demo")) return;
+  const used = new Set(pts.filter((p) => p.label).map((p) => p.label));
+  const label = [...NAMES, ...EXTRA].find((n) => !used.has(n)) || "device " + (used.size + 1);
+  const p = { x: e.clientX, y: e.clientY, vx: (Math.random() - .5) * .12, vy: (Math.random() - .5) * .12,
+              r: 2.2, lit: true, label, ph: Math.random() * 6.28 };
+  pts.push(p);
+  rings.push({ x: p.x, y: p.y, t: 0 });
+  const near = pts.filter((q) => q.lit && q !== p)
+    .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y)).slice(0, 2);
+  near.forEach((q, i) => setTimeout(() => sendLight(q, p), 250 + i * 500));
+});
+
+function draw(now) {
+  ctx.clearRect(0, 0, W, H);
+  const px = (mouse.x - W / 2), py = (mouse.y - H / 2);
+  const GS = W < 860 ? 27 : 19;
+  const gx0 = -((px * .016) % GS), gy0 = -((py * .016) % GS);
+  ctx.fillStyle = INK;
+  for (let gx = gx0 - GS; gx < W + GS; gx += GS) for (let gy = gy0 - GS; gy < H + GS; gy += GS) {
+    const dx = gx - mouse.x, dy = gy - mouse.y, d = Math.hypot(dx, dy);
+    let x = gx, y = gy, a = .14, r = .9;
+    if (d < 200 && d > .1) { const f = 1 - d / 200; x += dx / d * f * f * 20; y += dy / d * f * f * 20; a = .14 + f * .22; r = .9 + f * .6; }
+    ctx.globalAlpha = a; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  const L = LINK();
+  ctx.lineWidth = 1;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    for (let j = i + 1; j < pts.length; j++) {
+      const b = pts[j];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d > L) continue;
+      const k = 1 - d / L;
+      ctx.strokeStyle = (a.lit && b.lit) ? ACCENT : INK;
+      ctx.globalAlpha = k * ((a.lit && b.lit) ? .22 : .09);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    const dm = Math.hypot(a.x - mouse.x, a.y - mouse.y);
+    if (dm < L * 1.1) {
+      ctx.strokeStyle = ACCENT; ctx.globalAlpha = (1 - dm / (L * 1.1)) * .35;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(mouse.x, mouse.y); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  for (const pu of pulses) {
+    const a = pu.path[pu.i], b = pu.path[pu.i + 1];
+    const x = a.x + (b.x - a.x) * pu.t, y = a.y + (b.y - a.y) * pu.t;
+    ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.2; ctx.globalAlpha = .45;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(x, y); ctx.stroke();
+    ctx.globalAlpha = .14;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 14);
+    g.addColorStop(0, "rgba(43,78,255,0.7)"); g.addColorStop(1, "rgba(43,78,255,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 14, 0, 7); ctx.fill();
+    ctx.fillStyle = ACCENT; ctx.beginPath(); ctx.arc(x, y, 2.6, 0, 7); ctx.fill();
+  }
+  for (const r of rings) {
+    ctx.strokeStyle = ACCENT; ctx.globalAlpha = (1 - r.t) * .6; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(r.x, r.y, 6 + r.t * 70, 0, 7); ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  for (const p of pts) {
+    if (p.lit) {
+      const glow = .55 + .45 * Math.sin(now / 900 + p.ph);
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 16);
+      g.addColorStop(0, `rgba(43,78,255,${.28 * glow})`); g.addColorStop(1, "rgba(43,78,255,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, 16, 0, 7); ctx.fill();
+      ctx.fillStyle = ACCENT; ctx.globalAlpha = .6 + .4 * glow;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r + .6, 0, 7); ctx.fill();
+      if (p.label && !inCopy(p.x, p.y)) {
+        ctx.font = '10px "JetBrains Mono", monospace'; ctx.textAlign = "left";
+        ctx.fillStyle = MUTED; ctx.globalAlpha = .55 + .35 * glow;
+        ctx.fillText(p.label, p.x + 9, p.y + 3.5);
+      }
+    } else {
+      ctx.fillStyle = INK; ctx.globalAlpha = .28;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+let running = true;
+function loop(now) {
+  // Stop entirely once the hero is scrolled past: this canvas is decoration, and a
+  // phone should not spend battery drawing something nobody can see.
+  if (running && scrollY < H) { physics(); draw(now); }
+  requestAnimationFrame(loop);
+}
+document.addEventListener("visibilitychange", () => { running = !document.hidden; });
+addEventListener("mousemove", (e) => { mouse = { x: e.clientX, y: e.clientY }; });
+addEventListener("mouseleave", () => { mouse = { x: -1e4, y: -1e4 }; });
+resize();
+if (!reduced) requestAnimationFrame(loop); else draw(0);
+
+// ---------- replay of a real run ----------
+// Every line below is from the recorded two-device run in the README status table,
+// not an invented transcript. The timings are compressed; the numbers are not.
+const demoEl = document.getElementById("demo-lines");
+const demoLive = document.getElementById("demo-live");
+const DEMO = [
+  [0,    `<b>laptop</b> opened room <span class="hl">CCPU</span> · measured 4.0 ms/layer`],
+  [900,  `<b>+ pc</b> joined · measured 3.4 ms/layer · RTT <b>1 ms</b>`],
+  [1800, `planner: <b>2 devices</b>, host <b>pc</b> — it runs the LM head fastest`],
+  [2600, `<b>Qwen3 0.6B</b> · layers dealt: pc <b>0–15</b> · laptop <b>16–27</b>`],
+  [3400, `pulling only its own layers from the CDN<span class="dprog"><span></span></span>`],
+  [4900, `laptop <b>191.4 MB</b> · pc <b>412.8 MB</b> — not 610 MB twice`],
+  [5700, `<span class="hl">swarm online</span> · <b>you:</b> name three primary colours`],
+  [6600, `<div class="da">The three primary colours are <b>red</b>, <b>blue</b>, and <b>yellow</b>. These are the basic colours used in pigments and paint mixing.</div>`],
+  [7900, `<b>144 tokens</b> · <b>5.44 tok/s</b> · median lap <b>49.5 ms</b>`],
+];
+let demoT = [];
+function playDemo() {
+  demoT.forEach(clearTimeout); demoT = [];
+  demoEl.innerHTML = "";
+  demoLive.textContent = "LIVE";
+  demoLive.classList.remove("again");
+  for (const [at, html] of DEMO) {
+    demoT.push(setTimeout(() => {
+      const d = document.createElement("div");
+      d.className = "dl";
+      d.innerHTML = html;
+      demoEl.appendChild(d);
+      while (demoEl.scrollHeight > demoEl.clientHeight && demoEl.firstChild) demoEl.removeChild(demoEl.firstChild);
+    }, reduced ? 0 : at));
+  }
+  demoT.push(setTimeout(() => {
+    demoLive.textContent = "REPLAY";
+    demoLive.classList.add("again");
+  }, reduced ? 0 : DEMO[DEMO.length - 1][0] + 900));
+}
+demoLive.addEventListener("click", () => { if (demoLive.classList.contains("again")) playDemo(); });
+// Only start when it scrolls into view, so the whole thing is not already over by
+// the time anyone looks at it.
+const demoIO = new IntersectionObserver((es) => es.forEach((e) => {
+  if (e.isIntersecting) { playDemo(); demoIO.disconnect(); }
+}), { threshold: 0.3 });
+demoIO.observe(document.getElementById("demo"));
 </script>
 </body>
 </html>

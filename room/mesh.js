@@ -15,7 +15,21 @@
 
 import { encodeFrame, decodeSlice, makeReassembler } from "./wire.js";
 
-const ICE = [
+// STUN only, by default. STUN tells a device its own public address so two peers
+// can try to reach each other directly; it cannot carry traffic. That is enough
+// whenever a direct path exists -- which on one Wi-Fi network is essentially
+// always, and across two home networks is usually.
+//
+// It is NOT enough behind a symmetric NAT (most mobile carriers, many corporate
+// and campus networks), where the port a peer learns from STUN is not the port
+// its peer will actually see. Those cases need TURN, which relays. TURN is a
+// server that carries traffic, so it is never free by default and cannot be
+// hardcoded here; a deployment supplies its own in swarm-config.json and
+// room.js passes it in. See docs/DEPLOY.md.
+//
+// What that relay would carry is small: one hidden state per token per hop, a few
+// KB. This is not video.
+const DEFAULT_ICE = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
@@ -24,12 +38,21 @@ const CTRL_ID = 1;
 const WIRE_ID = 77;
 
 export class Mesh {
-  constructor({ room, name = "device", meta = {}, url = null } = {}) {
+  constructor({ room, name = "device", meta = {}, url = null, iceServers = null } = {}) {
     this.room = String(room || "").toUpperCase();
     this.name = name;
     this.meta = meta;
+    // Assignable after construction, like `url` below: room.js resolves the
+    // deployment config asynchronously and sets both before connect().
+    this.iceServers = iceServers || DEFAULT_ICE;
     this.id = null;
     this.peers = new Map();          // id -> { id, name, meta, pc, ctrl, wire, rs, rtt, msgId, ready }
+    // Same-origin by default, which is what the dev server serves (signalling rides
+    // the same listener as the pages, so https pages get wss on the same host and
+    // there is no mixed-content case to get wrong). A static deployment has its
+    // signalling service on a different host entirely and names it in
+    // swarm-config.json; room.js reads that and assigns `url` before connect(),
+    // which is the only place this field is read.
     this.url = url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/signal";
     this.ws = null;
     this._h = new Map();
@@ -48,9 +71,25 @@ export class Mesh {
     }
   }
 
+  // The room code rides the query string as well as the join message. The Node
+  // server (tools/signal.mjs) reads it from the message and ignores this; the
+  // Cloudflare Worker cannot, because the code decides WHICH Durable Object handles
+  // the socket, and that has to be known before the upgrade is accepted. `ws`
+  // strips the query before matching its `path` option, so adding it is invisible
+  // to the Node path.
+  _signalUrl() {
+    try {
+      const u = new URL(this.url);
+      u.searchParams.set("room", this.room);
+      return u.toString();
+    } catch {
+      return this.url;                      // a malformed URL should fail at connect, with its own message
+    }
+  }
+
   connect() {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url);
+      const ws = new WebSocket(this._signalUrl());
       this.ws = ws;
       const fail = (e) => reject(new Error("signaling unreachable: " + this.url + " (" + e + ")"));
       ws.onerror = () => fail("error");
@@ -123,7 +162,7 @@ export class Mesh {
     const p = this._peer(info);
     if (p.pc) return p;
 
-    const pc = new RTCPeerConnection({ iceServers: ICE });
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     p.pc = pc;
 
     pc.onicecandidate = (e) => {

@@ -7,10 +7,19 @@ reproduced here as those licences require.
 
 ## SwarmLLM
 
-Files under `engine/upstream/` are imported from
-<https://github.com/Nehanth/swarmllm>, pinned to commit
-`1c9763fcd7eb9c42865cd5937dceba678fe9d9a5`, and are used unmodified. Each carries a
-header naming its origin.
+Two separate things in this repository come from
+<https://github.com/Nehanth/swarmllm>:
+
+- **The engine.** Files under `engine/upstream/` are imported, pinned to commit
+  `1c9763fcd7eb9c42865cd5937dceba678fe9d9a5`, and used unmodified. Each carries a
+  header naming its origin.
+- **The interface design.** `index.html` and `room.html` adapt SwarmLLM's landing
+  and room pages — the palette, the type scale, the component shapes, the ambient
+  node-mesh canvas, the join-screen/room-screen split, the sidebar-plus-chat
+  layout, peer cards, the per-device load card, chat bubbles and toasts. Both files
+  carry a header saying so. The copy and the numbers are this project's own, and
+  the code underneath them drives this project's own `Room`, scheduler and
+  delivery resolver rather than SwarmLLM's.
 
 ```
 MIT License

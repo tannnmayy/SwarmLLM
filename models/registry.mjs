@@ -22,7 +22,104 @@ export const STATUS = {
   PLANNED: "planned",
 };
 
+// Where a device can get the weight bytes from. A descriptor declares both and
+// models/delivery.mjs decides which one THIS page uses, per device, at load time.
+//
+//   upstream  the published artifact on huggingface.co, pinned to a commit.
+//             Serves cross-origin range requests (access-control-allow-origin: *,
+//             and `Range` is a CORS-safelisted request header for a single
+//             `bytes=N-M`, so there is no preflight to fail). This is what makes a
+//             static deployment possible at all: the page can be 200 KB on a CDN
+//             while the 1.8 GB it needs comes from HF's CDN, not from the host.
+//   mirror    this origin's own /models/ directory. Faster on a LAN, works with no
+//             internet at all, and is the only source for a model whose files are
+//             a local derivative rather than a published artifact (SmolLM2's
+//             per-layer f16 shards are built by tools/fetch-model.mjs and exist
+//             nowhere upstream).
+//
+// Both are byte-identical for every GGUF here — that is what `provenance` records
+// and what tools/verify-delivery.mjs re-checks against the live upstream.
+export const ORIGIN = { MIRROR: "mirror", UPSTREAM: "upstream" };
+
 const GB = 2 ** 30;
+
+// One place that knows how a Hugging Face download URL is spelled, so a repo,
+// revision and filename cannot drift apart from the provenance record they came
+// from. Pinned to a commit rather than `main` on purpose: the registry claims a
+// specific sha256 for each file, and `main` is a mutable ref that can stop
+// matching it without anything here changing.
+const hf = (repo, revision, file) =>
+  `https://huggingface.co/${repo}/resolve/${revision}/${file}`;
+
+// The prose `sourceRevision` string every existing consumer already parses
+// (tools/probe-gguf.mjs regexes a byte count and a sha256 out of it), generated
+// from the structured record instead of typed out beside it. Same text as before;
+// one source of truth now.
+const describeProvenance = (p) =>
+  `huggingface.co/${p.repo} @ ${p.revision}, ${p.bytes} bytes, sha256:${p.sha256}`;
+
+// A GGUF model's three URLs at one origin. The weights live in the *-GGUF repo;
+// config.json and tokenizer.json do not exist there (HF returns 404) and come
+// from the base model repo, which is a different repo at a different revision.
+// Exactly what each GGUF is, recorded from the real fetch rather than assumed.
+//
+// `sha256` is the file's own SHA-256 and is checkable two ways: hash the local
+// mirror (tools/probe-gguf.mjs --hash), or read `X-Linked-ETag` off huggingface.co.
+// One trap worth writing down, because it cost an hour: that header only exists on
+// the 302 *before* the redirect to the CDN. Follow the redirect and the `ETag` you
+// get back is the Xet content hash (`X-Xet-Hash`), a different number entirely —
+// so a verifier must fetch with redirect: "manual". tools/verify-delivery.mjs does.
+//
+// `revision` is the commit the weights were taken at, and is what the upstream URL
+// pins to. The base repo is a separate repo with its own revision: the *-GGUF repos
+// carry only .gguf files, and return 404 for config.json and tokenizer.json.
+const PROVENANCE = {
+  "qwen3-0.6b": {
+    repo: "Qwen/Qwen3-0.6B-GGUF",
+    revision: "23749fefcc72300e3a2ad315e1317431b06b590a",
+    file: "Qwen3-0.6B-Q8_0.gguf",
+    bytes: 639446688,
+    sha256: "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+    baseRepo: "Qwen/Qwen3-0.6B",
+    baseRevision: "c1899de289a04d12100db370d81485cdf75e47ca",
+    mirrorDir: "/models/qwen3-0.6b",
+  },
+  "qwen3-1.7b": {
+    repo: "Qwen/Qwen3-1.7B-GGUF",
+    revision: "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+    file: "Qwen3-1.7B-Q8_0.gguf",
+    bytes: 1834426016,
+    sha256: "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    baseRepo: "Qwen/Qwen3-1.7B",
+    baseRevision: "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    mirrorDir: "/models/qwen3-1.7b",
+  },
+  "qwen3-4b": {
+    repo: "Qwen/Qwen3-4B-GGUF",
+    revision: "bc640142c66e1fdd12af0bd68f40445458f3869b",
+    file: "Qwen3-4B-Q8_0.gguf",
+    bytes: 4280404704,
+    sha256: "8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300",
+    baseRepo: "Qwen/Qwen3-4B",
+    baseRevision: "1cfa9a7208912126459214e8b04321603b3df60c",
+    mirrorDir: "/models/qwen3-4b",
+  },
+};
+
+function ggufSources(p) {
+  return {
+    [ORIGIN.UPSTREAM]: {
+      model: hf(p.repo, p.revision, p.file),
+      config: hf(p.baseRepo, p.baseRevision, "config.json"),
+      tokenizer: hf(p.baseRepo, p.baseRevision, "tokenizer.json"),
+    },
+    [ORIGIN.MIRROR]: {
+      model: `${p.mirrorDir}/${p.file}`,
+      config: `${p.mirrorDir}/config.json`,
+      tokenizer: `${p.mirrorDir}/tokenizer.json`,
+    },
+  };
+}
 
 export const MODELS = {
   "smollm2-135m": {
@@ -30,7 +127,22 @@ export const MODELS = {
     label: "SmolLM2 135M · CPU",
     status: STATUS.VERIFIED,
     engineKind: "cpu-smollm",
-    dir: "/models/smollm2-135m",
+    // Mirror-only, and not for a convenience reason: what this engine loads is not
+    // a published artifact. tools/fetch-model.mjs downloads SmolLM2's safetensors
+    // and reshapes them into per-layer f16 shards (embed.bin, layer-NN.bin,
+    // manifest.json) that exist only on the machine that ran it. There is no
+    // upstream URL to fall back to, so a deployment that does not carry
+    // models/smollm2-135m/ cannot offer this model at all — models/delivery.mjs
+    // reports that rather than letting it 404 halfway through a join.
+    sources: {
+      [ORIGIN.MIRROR]: {
+        dir: "/models/smollm2-135m",
+        manifest: "/models/smollm2-135m/manifest.json",
+        tokenizer: "/models/smollm2-135m/tokenizer.json",
+      },
+    },
+    mirrorOnlyReason:
+      "its per-layer f16 shards are built locally by tools/fetch-model.mjs and are not published anywhere upstream",
     layers: 30,
     maxSeqDefault: 512,
     maxTokensDefault: 60,
@@ -52,17 +164,12 @@ export const MODELS = {
     status: STATUS.VERIFIED,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    // Served from this host's own static files, not huggingface.co directly. The
-    // blueprint explicitly permits this ("permit a local static mirror for
-    // demos" — section 9): a venue room does not want every device pulling 610 MB
-    // from a remote CDN individually, and a browser sandboxed away from arbitrary
-    // external hosts (as this development environment's preview browser is) can
-    // still range-fetch from same-origin static files. Swap these three URLs back
-    // to the canonical ones below for a deployment whose browsers can reach HF.
-    modelUrl: "/models/qwen3-0.6b/Qwen3-0.6B-Q8_0.gguf",
-    configUrl: "/models/qwen3-0.6b/config.json",
-    tokenizerUrl: "/models/qwen3-0.6b/tokenizer.json",
-    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf",
+    // Two origins for the same bytes; models/delivery.mjs picks one per device.
+    // The local mirror is preferred where it exists (LAN speed, works offline);
+    // huggingface.co is the fallback, and is what a static deployment actually
+    // runs on — see ORIGIN above.
+    provenance: PROVENANCE["qwen3-0.6b"],
+    sources: ggufSources(PROVENANCE["qwen3-0.6b"]),
     expectedFormat: "Q8_0",
     // The blueprint's suggested starting range (512-2048), and confirmed to
     // actually load — solo, all 28 layers plus the LM head, on this hardware —
@@ -88,13 +195,9 @@ export const MODELS = {
     // equality becomes an empirical question rather than a guarantee. This
     // field read "f16" until 2026-09-10 and was simply wrong.
     wireDtype: "f32",
-    // Recorded from the real fetch, not guessed: HTTP response headers off
-    // huggingface.co on 2026-09-09 (X-Repo-Commit, X-Linked-Size, X-Linked-ETag),
-    // then independently confirmed by hashing the downloaded file — the local
-    // SHA-256 matches HF's recorded ETag exactly, so the mirror under
-    // models/qwen3-0.6b/ is byte-identical to the published artifact.
-    sourceRevision: "huggingface.co/Qwen/Qwen3-0.6B-GGUF @ 23749fefcc72300e3a2ad315e1317431b06b590a, " +
-      "639446688 bytes, sha256:9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+    // Derived from `provenance` above rather than typed beside it — the same prose
+    // this field has always carried, minus the chance of the two disagreeing.
+    sourceRevision: describeProvenance(PROVENANCE["qwen3-0.6b"]),
     // Sized against the real solo cost at this model's default window (1053 MB at
     // maxSeq 2048), with headroom. tools/probe-gguf.mjs fails if this drops below
     // the real figure, which is how the 512 -> 2048 change was caught.
@@ -122,12 +225,8 @@ export const MODELS = {
     status: STATUS.VERIFIED,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    // Local mirror, same reasoning as 0.6B above: a room full of devices should
-    // pull 1.8 GB off the host on the LAN, not off a CDN one device at a time.
-    modelUrl: "/models/qwen3-1.7b/Qwen3-1.7B-Q8_0.gguf",
-    configUrl: "/models/qwen3-1.7b/config.json",
-    tokenizerUrl: "/models/qwen3-1.7b/tokenizer.json",
-    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
+    provenance: PROVENANCE["qwen3-1.7b"],
+    sources: ggufSources(PROVENANCE["qwen3-1.7b"]),
     expectedFormat: "Q8_0",
     maxSeqDefault: 2048,
     // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
@@ -144,12 +243,7 @@ export const MODELS = {
     // equality is an empirical result for this model, not a guarantee the way it
     // is at 0.6B. See the Phase F report.
     wireDtype: "f16",
-    // Recorded from the real fetch on 2026-09-10, then independently confirmed by
-    // hashing the downloaded file: the local SHA-256 matches HF's X-Linked-ETag
-    // exactly, so the mirror under models/qwen3-1.7b/ is byte-identical to the
-    // published artifact.
-    sourceRevision: "huggingface.co/Qwen/Qwen3-1.7B-GGUF @ 90862c4b9d2787eaed51d12237eafdfe7c5f6077, " +
-      "1834426016 bytes, sha256:061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    sourceRevision: describeProvenance(PROVENANCE["qwen3-1.7b"]),
     // Real solo cost is 2193 MB at maxSeq 2048; this carries headroom above it.
     minRoomEnvelopeBytes: Math.round(2.4 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
@@ -167,10 +261,8 @@ export const MODELS = {
     status: STATUS.EXPERIMENTAL,
     engineKind: "dense-gguf",
     architecture: "qwen3",
-    modelUrl: "/models/qwen3-4b/Qwen3-4B-Q8_0.gguf",
-    configUrl: "/models/qwen3-4b/config.json",
-    tokenizerUrl: "/models/qwen3-4b/tokenizer.json",
-    upstreamUrl: "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q8_0.gguf",
+    provenance: PROVENANCE["qwen3-4b"],
+    sources: ggufSources(PROVENANCE["qwen3-4b"]),
     expectedFormat: "Q8_0",
     maxSeqDefault: 2048,
     // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
@@ -182,10 +274,7 @@ export const MODELS = {
     // room.js lowers this further, per turn, when less context than that remains.
     maxTokensDefault: 640,
     wireDtype: "f16",
-    // Recorded from the real fetch on 2026-09-10 and confirmed by hashing the
-    // downloaded file against HF's X-Linked-ETag.
-    sourceRevision: "huggingface.co/Qwen/Qwen3-4B-GGUF @ bc640142c66e1fdd12af0bd68f40445458f3869b, " +
-      "4280404704 bytes, sha256:8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300",
+    sourceRevision: describeProvenance(PROVENANCE["qwen3-4b"]),
     minRoomEnvelopeBytes: Math.round(4.6 * GB),
     capabilityRequirements: { webgpu: true, shaderF16: true },
     why: "Still dense, but 36 layers at hidden 2560 — about 4.2 GB to hold. This is the rung " +
@@ -207,9 +296,10 @@ export const MODELS = {
     status: STATUS.PLANNED,
     engineKind: "qwen35-gguf",
     architecture: "qwen35",
-    modelUrl: null,
-    configUrl: null,
-    tokenizerUrl: null,
+    // No sources at all, deliberately: this rung is blocked on an engine that is
+    // not vendored, so naming a URL would imply it could be loaded by swapping one.
+    sources: null,
+    provenance: null,
     expectedFormat: "Q4_0",
     maxSeqDefault: 2048,
     // Qwen3 reasons in a <think> block before it answers, so the cap has to fit a
@@ -235,12 +325,25 @@ export const MODELS = {
 // *this* device — a phone with no WebGPU cannot try Qwen3 0.6B no matter how well
 // tested it is elsewhere. This is the per-device view the UI should render from,
 // per the blueprint's "Unavailable on this device" tier (section 6.3).
+// The one place the "can this device run this model" rule lives. Used by
+// availableModels() below to grey out a picker entry, and by room.js to decide
+// whether to tell the room this device is worth dealing layers to at all --
+// those two answers must never disagree, or a device the picker called
+// unavailable still gets handed a layer range and then fails to load it.
+//
+// `caps.webgpu === false` rather than `!caps.webgpu` on purpose: undefined means
+// "not probed yet", which is not the same as "absent", and must not disqualify a
+// device before its adapter request has resolved.
+export function capabilityGap(descriptor, caps = {}) {
+  const req = descriptor?.capabilityRequirements || {};
+  if (req.webgpu && caps.webgpu === false) return "this device has no WebGPU";
+  if (req.shaderF16 && caps.webgpu && caps.shaderF16 === false) return "this GPU/driver lacks shader-f16";
+  return null;
+}
+
 export function availableModels(caps = {}) {
   return Object.values(MODELS).map((m) => {
-    const req = m.capabilityRequirements || {};
-    let unavailableReason = null;
-    if (req.webgpu && caps.webgpu === false) unavailableReason = "this device has no WebGPU";
-    else if (req.shaderF16 && caps.webgpu && caps.shaderF16 === false) unavailableReason = "this GPU/driver lacks shader-f16";
+    const unavailableReason = capabilityGap(m, caps);
 
     return {
       ...m,
@@ -254,4 +357,18 @@ export function getModel(id) {
   const m = MODELS[id];
   if (!m) throw new Error(`unknown model id: ${id}`);
   return m;
+}
+
+// The URLs for one model at one origin, or null if it does not publish that origin.
+// Callers should go through models/delivery.mjs rather than calling this directly —
+// this is the lookup, that is the decision.
+export function sourcesFor(descriptor, origin) {
+  return descriptor?.sources?.[origin] || null;
+}
+
+// Which origins this model could be served from, best first. Order is the policy:
+// a mirror on the same origin beats a CDN across the internet when it exists, so
+// a LAN room stays a LAN room and an offline laptop keeps working.
+export function deliveryOrigins(descriptor) {
+  return [ORIGIN.MIRROR, ORIGIN.UPSTREAM].filter((o) => !!sourcesFor(descriptor, o));
 }

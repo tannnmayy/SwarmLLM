@@ -23,7 +23,7 @@ import { createHash } from "node:crypto";
 import { parseGGUFHeader } from "../engine/upstream/gguf.js";
 import { cfgFromGGUFMeta, modelSpecFromGGUF, validateDescriptor } from "../engine/gpu-adapter.mjs";
 import { chooseEncoding } from "../room/wire.js";
-import { getModel } from "../models/registry.mjs";
+import { getModel, sourcesFor, ORIGIN } from "../models/registry.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const HEADER_PROBE_BYTES = 16 * 2 ** 20;   // same window engine/gpu-adapter.mjs uses
@@ -46,18 +46,17 @@ const descriptor = getModel(id);
 console.log(`\n${descriptor.label}  (${descriptor.id})`);
 console.log(`status: ${descriptor.status}   engineKind: ${descriptor.engineKind}\n`);
 
-// A local mirror path ("/models/x/y.gguf") maps to a file on disk; a remote URL
-// cannot be probed this way, and saying so beats a confusing fetch error.
-if (!descriptor.modelUrl) {
-  console.error(`${descriptor.id} has no modelUrl -- it is a roadmap entry, not a loadable model.`);
+// This tool reads from disk, so it is a check on the local mirror specifically --
+// the upstream origin is checked over the network by tools/verify-delivery.mjs
+// instead. A model with no mirror declared has nothing here to read.
+const mirror = sourcesFor(descriptor, ORIGIN.MIRROR);
+if (!mirror?.model) {
+  console.error(`${descriptor.id} declares no local mirror` +
+    (descriptor.sources ? " -- run tools/verify-delivery.mjs to check its upstream origin instead."
+                        : " -- it is a roadmap entry, not a loadable model."));
   process.exit(2);
 }
-if (!descriptor.modelUrl.startsWith("/")) {
-  console.error(`${descriptor.id}'s modelUrl is remote (${descriptor.modelUrl}).`);
-  console.error("Download it to a local mirror under models/ first -- this tool reads from disk.");
-  process.exit(2);
-}
-const ggufPath = join(ROOT, descriptor.modelUrl.replace(/^\//, ""));
+const ggufPath = join(ROOT, mirror.model.replace(/^\//, ""));
 
 // ---------------------------------------------------------------- file identity
 console.log("file identity");
@@ -104,8 +103,7 @@ try {
 
 // ---------------------------------------------------------------- vs config.json
 console.log("\nGGUF header vs the model's own config.json");
-const cfgPath = descriptor.configUrl && descriptor.configUrl.startsWith("/")
-  ? join(ROOT, descriptor.configUrl.replace(/^\//, "")) : null;
+const cfgPath = mirror.config ? join(ROOT, mirror.config.replace(/^\//, "")) : null;
 const published = cfgPath ? await readFile(cfgPath, "utf8").then(JSON.parse).catch(() => null) : null;
 
 if (!published) {

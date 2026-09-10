@@ -2,10 +2,13 @@ certs/
 node_modules/
 models/*
 !models/registry.mjs
+!models/delivery.mjs
 .DS_Store
 
 # build artefacts
 *.pptx
+dist/
+.wrangler/
 
 tests/.qr/
 mine.json

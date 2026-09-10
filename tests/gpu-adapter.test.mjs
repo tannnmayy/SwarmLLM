@@ -15,7 +15,7 @@ import {
   probeHeader, modelSpecFromGGUF, checkDeviceLost,
 } from "../engine/gpu-adapter.mjs";
 import { createEngine, EngineNotAvailableError } from "../engine/factory.mjs";
-import { MODELS, STATUS, availableModels, getModel } from "../models/registry.mjs";
+import { MODELS, STATUS, ORIGIN, availableModels, getModel, sourcesFor } from "../models/registry.mjs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,8 +70,13 @@ console.log("\nmodel registry");
   // Phase F: 1.7B passed the same full gate 0.6B did.
   ok("qwen3-1.7b is verified (full Phase F gate, incl. an external reference match)",
      MODELS["qwen3-1.7b"].status === STATUS.VERIFIED);
-  ok("qwen3-1.7b points at a local mirror, not a remote CDN, like 0.6B does",
-     MODELS["qwen3-1.7b"].modelUrl.startsWith("/models/"));
+  // A descriptor no longer carries one resolved URL — it declares both origins it
+  // could be served from, and models/delivery.mjs picks per device at load time.
+  // tests/delivery.test.mjs owns that decision; this only checks the declaration
+  // survives, since every consumer downstream of it reads a resolved descriptor.
+  ok("qwen3-1.7b declares both a local mirror and a pinned upstream, like 0.6B does",
+     sourcesFor(MODELS["qwen3-1.7b"], ORIGIN.MIRROR).model.startsWith("/models/") &&
+     sourcesFor(MODELS["qwen3-1.7b"], ORIGIN.UPSTREAM).model.startsWith("https://huggingface.co/"));
   ok("qwen3-1.7b records a real byte length and sha256, not a placeholder",
      /\d{9,}\s*bytes/.test(MODELS["qwen3-1.7b"].sourceRevision) &&
      /sha256:[0-9a-f]{64}/.test(MODELS["qwen3-1.7b"].sourceRevision));

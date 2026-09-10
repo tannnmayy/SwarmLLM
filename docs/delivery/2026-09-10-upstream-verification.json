@@ -1,0 +1,264 @@
+{
+  "tool": "tools/verify-delivery.mjs",
+  "at": "2026-09-10T02:34:49.388Z",
+  "full": false,
+  "summary": {
+    "pass": 39,
+    "fail": 0,
+    "notes": 3
+  },
+  "results": [
+    {
+      "model": "qwen3-0.6b",
+      "check": "the pinned upstream URL resolves",
+      "pass": true,
+      "detail": "HTTP 302"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "upstream serves the revision the registry pins",
+      "pass": true,
+      "detail": "HF says 23749fefcc72300e3a2ad315e1317431b06b590a, registry pins 23749fefcc72300e3a2ad315e1317431b06b590a"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "upstream byte length matches the registry",
+      "pass": true,
+      "detail": "HF says 639446688, registry says 639446688"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "upstream SHA-256 (X-Linked-ETag) matches the registry",
+      "pass": true,
+      "detail": "HF says 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031, registry says 9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "X-Xet-Hash differs from the SHA-256, as expected",
+      "pass": null,
+      "detail": "18d608d38b934c86fc3f3a050157b2d4df8d12330de6d13af3ba201edd0e6539 -- this is what a redirect-following client sees as ETag; it is not a sha256"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "a cross-origin range request returns 206 with the GGUF magic bytes",
+      "pass": true,
+      "detail": "content-range: bytes 0-3/639446688"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "a CORS preflight for a Range request is answered",
+      "pass": true,
+      "detail": "HTTP 200, allow-headers: range"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "content-range is readable cross-origin (exposed or wildcarded)",
+      "pass": true,
+      "detail": "expose-headers: X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "local mirror is the same byte length as upstream",
+      "pass": true,
+      "detail": "mirror 639446688, upstream 639446688"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "local mirror matches upstream at 4 x 64 KB spot ranges",
+      "pass": true,
+      "detail": "offsets 0, 159861672, 319723344, 639381152 (run --full to hash the whole 609.8 MB)"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "upstream config.json resolves",
+      "pass": true,
+      "detail": "726 bytes"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "local config.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd, upstream sha256:660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "upstream tokenizer.json resolves",
+      "pass": true,
+      "detail": "11422654 bytes"
+    },
+    {
+      "model": "qwen3-0.6b",
+      "check": "local tokenizer.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4, upstream sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "the pinned upstream URL resolves",
+      "pass": true,
+      "detail": "HTTP 302"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "upstream serves the revision the registry pins",
+      "pass": true,
+      "detail": "HF says 90862c4b9d2787eaed51d12237eafdfe7c5f6077, registry pins 90862c4b9d2787eaed51d12237eafdfe7c5f6077"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "upstream byte length matches the registry",
+      "pass": true,
+      "detail": "HF says 1834426016, registry says 1834426016"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "upstream SHA-256 (X-Linked-ETag) matches the registry",
+      "pass": true,
+      "detail": "HF says 061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a, registry says 061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "X-Xet-Hash differs from the SHA-256, as expected",
+      "pass": null,
+      "detail": "0765e15700b0f9aebe441b64af38978f083447471b9854e10a18c644740e1a6d -- this is what a redirect-following client sees as ETag; it is not a sha256"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "a cross-origin range request returns 206 with the GGUF magic bytes",
+      "pass": true,
+      "detail": "content-range: bytes 0-3/1834426016"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "a CORS preflight for a Range request is answered",
+      "pass": true,
+      "detail": "HTTP 200, allow-headers: range"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "content-range is readable cross-origin (exposed or wildcarded)",
+      "pass": true,
+      "detail": "expose-headers: X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "local mirror is the same byte length as upstream",
+      "pass": true,
+      "detail": "mirror 1834426016, upstream 1834426016"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "local mirror matches upstream at 4 x 64 KB spot ranges",
+      "pass": true,
+      "detail": "offsets 0, 458606504, 917213008, 1834360480 (run --full to hash the whole 1749.4 MB)"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "upstream config.json resolves",
+      "pass": true,
+      "detail": "726 bytes"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "local config.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197, upstream sha256:1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "upstream tokenizer.json resolves",
+      "pass": true,
+      "detail": "11422654 bytes"
+    },
+    {
+      "model": "qwen3-1.7b",
+      "check": "local tokenizer.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4, upstream sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "the pinned upstream URL resolves",
+      "pass": true,
+      "detail": "HTTP 302"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "upstream serves the revision the registry pins",
+      "pass": true,
+      "detail": "HF says bc640142c66e1fdd12af0bd68f40445458f3869b, registry pins bc640142c66e1fdd12af0bd68f40445458f3869b"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "upstream byte length matches the registry",
+      "pass": true,
+      "detail": "HF says 4280404704, registry says 4280404704"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "upstream SHA-256 (X-Linked-ETag) matches the registry",
+      "pass": true,
+      "detail": "HF says 8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300, registry says 8c2f07f26af9747e41988551106f149b03eb9b5cb6df636027b6bf6278473300"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "X-Xet-Hash differs from the SHA-256, as expected",
+      "pass": null,
+      "detail": "c8aa2cf6a726855a9edbe70f6e372d351c51a48a69bfceecb070fe1d22b88f17 -- this is what a redirect-following client sees as ETag; it is not a sha256"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "a cross-origin range request returns 206 with the GGUF magic bytes",
+      "pass": true,
+      "detail": "content-range: bytes 0-3/4280404704"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "a CORS preflight for a Range request is answered",
+      "pass": true,
+      "detail": "HTTP 200, allow-headers: range"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "content-range is readable cross-origin (exposed or wildcarded)",
+      "pass": true,
+      "detail": "expose-headers: X-Repo-Commit,X-Request-Id,X-Error-Code,X-Error-Message,X-Total-Count,ETag,Link,Accept-Ranges,Content-Range,X-Linked-Size,X-Linked-ETag,X-Xet-Hash"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "local mirror is the same byte length as upstream",
+      "pass": true,
+      "detail": "mirror 4280404704, upstream 4280404704"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "local mirror matches upstream at 4 x 64 KB spot ranges",
+      "pass": true,
+      "detail": "offsets 0, 1070101176, 2140202352, 4280339168 (run --full to hash the whole 4082.1 MB)"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "upstream config.json resolves",
+      "pass": true,
+      "detail": "726 bytes"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "local config.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:8ba006f74fecfaaeb392872a60f4a480e7ec9860153d2e1b769ec81f9a147f8a, upstream sha256:8ba006f74fecfaaeb392872a60f4a480e7ec9860153d2e1b769ec81f9a147f8a"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "upstream tokenizer.json resolves",
+      "pass": true,
+      "detail": "11422654 bytes"
+    },
+    {
+      "model": "qwen3-4b",
+      "check": "local tokenizer.json is byte-identical to upstream",
+      "pass": true,
+      "detail": "mirror sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4, upstream sha256:aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    }
+  ]
+}

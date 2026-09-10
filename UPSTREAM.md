@@ -1,4 +1,9 @@
-# Imported engine
+# Imported from SwarmLLM
+
+Two things, imported at different depths and for different reasons: the **engine**,
+which is vendored verbatim, and the **interface design**, which is adapted. Both are
+from <https://github.com/Nehanth/swarmllm> under MIT — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## What is imported
 
@@ -53,9 +58,33 @@ reset()                  // all    : new conversation, caches back to position 0
 Both are constructed with `{ layerRange, hasEmbed, hasHead, maxSeq }`. The room,
 the scheduler and the recovery path therefore drive either one without changing.
 
+## The interface
+
+`index.html` and `room.html` adapt SwarmLLM's landing and room pages. This is a
+design import, not a code import: the two projects' room runtimes have different
+APIs, different message names and different features, so a file copy would have been
+a page that did not work. What was taken is everything that is genuinely portable —
+
+| | |
+|---|---|
+| tokens | the paper/ink palette, the blue accent, Space Grotesk + JetBrains Mono |
+| shapes | pill buttons and inputs, 12–20px card radii, the hover lift, the dotted ground |
+| structure | join screen → room screen; sidebar + chat pane; the per-device load card; chat bubbles; toasts |
+| motion | reveal-on-scroll, the ambient node-mesh canvas, the replay panel |
+
+— and what was not is the copy and the numbers, which have to be this project's own
+to stay true, and the wiring, which drives our `Room`, our scheduler comparison, our
+delivery resolver and our recovery path. Both files carry a header saying where the
+design came from.
+
+Features this project has and SwarmLLM's page does not (the strategy comparison
+table, the placement `why` list, the delivery-origin readout, the capability
+pre-flight, the recovery banner, the local QR) are kept and given a home in the
+imported layout rather than dropped to make the port cleaner.
+
 ## What remains ours
 
-Everything outside `engine/upstream/`:
+Everything outside `engine/upstream/`, and the behaviour behind both pages:
 
 | | |
 |---|---|

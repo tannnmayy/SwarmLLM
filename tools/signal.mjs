@@ -31,8 +31,35 @@ function roster(room) {
   return [...room.entries()].map(([id, p]) => ({ id, name: p.name, meta: p.meta }));
 }
 
-export function attachSignaling(server, { log = true } = {}) {
-  const wss = new WebSocketServer({ server, path: "/signal" });
+// What the standalone service reports on /healthz. Counts only -- no room codes, no
+// peer names. A health endpoint that listed live rooms would hand out join codes to
+// anyone who curled it, which is the one thing this server must never do.
+export function signalStats() {
+  let peers = 0;
+  for (const room of rooms.values()) peers += room.size;
+  return { rooms: rooms.size, peers };
+}
+
+// `allowOrigins`: if non-empty, only pages from these origins may open a socket.
+// It has to be enforced here, in ws's own verifyClient hook, rather than in a
+// server.on("upgrade") listener added afterwards -- ws registers its upgrade
+// listener when the WebSocketServer is constructed, so a later listener runs
+// second, by which point the handshake has already completed and writing a 403
+// into the socket does nothing. Not authentication (the room code is still the
+// only thing gating a room); it just stops another site using this as free
+// infrastructure.
+export function attachSignaling(server, { log = true, allowOrigins = [] } = {}) {
+  const wss = new WebSocketServer({
+    server,
+    path: "/signal",
+    verifyClient: allowOrigins.length
+      ? ({ origin }) => {
+          const ok = allowOrigins.includes(origin || "");
+          if (!ok && log) console.log(`  ! refused a socket from origin ${origin || "(none)"}`);
+          return ok;
+        }
+      : undefined,
+  });
 
   wss.on("connection", (ws) => {
     let id = null, code = null;
